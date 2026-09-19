@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ("Settings", "get_settings", "SettingsDep", "SERVICE_NAME", "SERVICE_VERSION")
 
-BASE_DIR = Path(__file__).resolve().parents[3]
+BASE_DIR = Path(__file__).resolve().parents[2]
 
 SERVICE_NAME = "gateway"
 SERVICE_VERSION = "0.1.0"
@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
+        # .env общий на четыре сервиса, и каждому нужно своё подмножество.
+        # С forbid (дефолт BaseSettings) gateway падал бы на настройках
+        # баз данных, которые нужны генератору и лабам.
+        extra="ignore",
     )
 
 
