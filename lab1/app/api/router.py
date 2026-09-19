@@ -100,6 +100,7 @@ async def report(request: Request, body: ReportRequest) -> ReportResponse:
     """Студенты с минимальным процентом посещения лекций по заданному термину."""
     data = await build_report(
         elastic=request.app.state.elastic,
+        neo4j_driver=request.app.state.neo4j,
         pg_pool=request.app.state.pg_pool,
         redis=request.app.state.redis,
         term=body.term,

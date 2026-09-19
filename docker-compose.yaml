@@ -127,10 +127,36 @@ services:
       REDIS_PORT: 6379
       ELASTIC_HOST: elasticsearch
       ELASTIC_PORT: 9200
+      NEO4J_HOST: neo4j
+      NEO4J_BOLT_PORT: 7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?не задан в .env}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       elasticsearch: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: uni-gateway
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?не задан в .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TTL_MINUTES: ${JWT_ACCESS_TTL_MINUTES:-60}
+      JWT_ISSUER: ${JWT_ISSUER:-university-gateway}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-university-labs}
+      # Внутри сети compose lab1 адресуется по имени сервиса и своему
+      # внутреннему порту 8000 — не по 8001, опубликованному на хост.
+      LAB1_URL: http://lab1:8000
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-30}
+    ports:
+      - "8000:8000"
+    depends_on:
+      lab1: { condition: service_healthy }
 
   generator:
     build:

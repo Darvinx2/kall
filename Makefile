@@ -1,2 +1,4 @@
+.PHONY: run
 run:
-	@.venv/bin/uvicorn services.gateway.main:create_app --factory --reload --port 8000
+	@docker compose up -d postgres redis mongodb neo4j elasticsearch lab1
+	@.venv/bin/uvicorn gateway.main:create_app --factory --reload --port 8000

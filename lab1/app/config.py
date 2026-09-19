@@ -1,4 +1,4 @@
-"""Настройки подключения к трём хранилищам, которые использует лаба №1.
+"""Настройки подключения к четырём хранилищам, которые использует лаба №1.
 
 JWT здесь нет: токен проверяет только gateway. Лаба недоступна снаружи сети
 compose (порт наружу не публикуется), поэтому повторная проверка не нужна —
@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     elastic_port: int = 9201
     elastic_scheme: str = "http"
 
+    neo4j_host: str = "localhost"
+    neo4j_bolt_port: int = 7688
+    neo4j_user: str = "neo4j"
+    neo4j_password: SecretStr = SecretStr("university")
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
@@ -55,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def elastic_url(self) -> str:
         return f"{self.elastic_scheme}://{self.elastic_host}:{self.elastic_port}"
+
+    @property
+    def neo4j_url(self) -> str:
+        return f"bolt://{self.neo4j_host}:{self.neo4j_bolt_port}"
 
 
 @lru_cache

@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     jwt_issuer: str = "university-gateway"
     jwt_audience: str = "university-labs"
 
+    # lab1 недоступна снаружи сети compose, поэтому токен ей не пробрасывается —
+    # проверка авторизации целиком на gateway. Внутри сети compose обращение
+    # идёт по имени сервиса на порт 8000, снаружи — на опубликованный 8001.
+    lab1_url: str = "http://localhost:8001"
+    http_timeout_seconds: float = 30.0
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
