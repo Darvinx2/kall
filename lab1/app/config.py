@@ -1,4 +1,4 @@
-"""Настройки подключения к четырём хранилищам, которые использует лаба №1.
+"""Настройки подключения к трём хранилищам, которые использует лаба №1.
 
 JWT здесь нет: токен проверяет только gateway. Лаба недоступна снаружи сети
 compose (порт наружу не публикуется), поэтому повторная проверка не нужна —
@@ -26,10 +26,6 @@ class Settings(BaseSettings):
     postgres_user: str = "university"
     postgres_password: SecretStr = SecretStr("university")
 
-    redis_host: str = "localhost"
-    redis_port: int = 6380
-    redis_db: int = 0
-
     elastic_host: str = "localhost"
     elastic_port: int = 9201
     elastic_scheme: str = "http"
@@ -52,10 +48,6 @@ class Settings(BaseSettings):
             f"{self.postgres_password.get_secret_value()}@"
             f"{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
-
-    @property
-    def redis_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def elastic_url(self) -> str:

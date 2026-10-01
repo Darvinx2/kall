@@ -1,0 +1,301 @@
+Project UniversityMicroservices {
+  database_type: 'PostgreSQL'
+  Note: '''
+    PostgreSQL — источник истины (source of truth). Остальные четыре
+    хранилища (Redis, MongoDB, Neo4j, Elasticsearch) держат денормализованные
+    проекции этих же сущностей и НЕ являются реляционными по своей природе —
+    их структура описана в Note-блоках ниже, а не таблицами DBML, чтобы не
+    рисовать несуществующие FK. Все пять хранилищ используют одни и те же
+    UUID (присваиваются один раз в generator/app/data.py), поэтому записи
+    легко сопоставить между базами.
+  '''
+}
+
+// ======================== ОРГАНИЗАЦИОННАЯ СТРУКТУРА ========================
+
+Table university {
+  id uuid [pk]
+  name varchar(500) [not null]
+  short_name varchar(100)
+  address text
+  website varchar(255)
+  founded_year int
+  created_at timestamp [default: `now()`]
+}
+
+Table institute {
+  id uuid [pk]
+  university_id uuid [ref: > university.id, note: 'ON DELETE CASCADE']
+  name varchar(500) [not null]
+  short_name varchar(100)
+  dean varchar(300)
+  created_at timestamp [default: `now()`]
+}
+
+Table department {
+  id uuid [pk]
+  institute_id uuid [ref: > institute.id, note: 'ON DELETE CASCADE']
+  name varchar(500) [not null]
+  short_name varchar(100)
+  head varchar(300)
+  room varchar(50)
+  created_at timestamp [default: `now()`]
+}
+
+Table specialty {
+  id uuid [pk]
+  name varchar(500) [not null]
+  code varchar(20) [not null]
+  degree_level varchar(20)
+  duration_years int
+  created_at timestamp [default: `now()`]
+}
+
+// M:N кафедра — специальность
+Table department_specialties {
+  id uuid [pk]
+  department_id uuid [ref: > department.id, note: 'ON DELETE CASCADE']
+  specialty_id uuid [ref: > specialty.id, note: 'ON DELETE CASCADE']
+  is_primary boolean [default: true]
+  created_at timestamp [default: `now()`]
+}
+
+// ============================ УЧЕБНЫЙ ПЛАН ============================
+
+Table lecture_course {
+  id uuid [pk]
+  specialty_id uuid [ref: > specialty.id, note: 'ON DELETE CASCADE']
+  name varchar(500) [not null]
+  description text
+  semester int [note: 'CHECK IN (1, 2)']
+  total_hours int
+  lecture_hours int
+  practice_hours int
+  lab_hours int
+  is_elective boolean [not null, default: false, note: 'курс по выбору — держит лабы №2 и №3']
+  created_at timestamp [default: `now()`]
+}
+
+Table lecture {
+  id uuid [pk]
+  course_id uuid [ref: > lecture_course.id, note: 'ON DELETE CASCADE']
+  title varchar(500) [not null]
+  annotation text [note: 'полнотекстовый термин для лабы №1']
+  lecture_type varchar(50)
+  computer_type varchar(100) [note: 'требование к тех. средствам — лаба №2']
+  tags "text[]" [note: 'GIN-индекс; тег спец. дисциплины кафедры — лаба №3']
+  order_number int
+  duration_minutes int [default: 90]
+  created_at timestamp [default: `now()`]
+}
+
+Table lecture_material {
+  id uuid [pk]
+  lecture_id uuid [ref: > lecture.id, note: 'ON DELETE CASCADE']
+  content_type varchar(50)
+  title varchar(500)
+  content_text text
+  file_url varchar(1000)
+  metadata jsonb
+  created_at timestamp [default: `now()`]
+}
+
+// ============================== СТУДЕНТЫ ==============================
+
+Table student_group {
+  id uuid [pk]
+  specialty_id uuid [ref: > specialty.id, note: 'ON DELETE CASCADE']
+  name varchar(50) [not null]
+  enrollment_year int
+  curator varchar(300)
+  created_at timestamp [default: `now()`]
+}
+
+Table student {
+  id uuid [pk]
+  group_id uuid [ref: > student_group.id, note: 'ON DELETE CASCADE']
+  first_name varchar(100) [not null]
+  last_name varchar(100) [not null]
+  patronymic varchar(100)
+  email varchar(255)
+  phone varchar(20)
+  student_card_number varchar(20) [unique, note: 'первичный ключ карточки в Redis']
+  enrollment_date date
+  status varchar(20) [default: 'active']
+  created_at timestamp [default: `now()`]
+}
+
+// M:N студент — курс (в т.ч. курсы по выбору)
+Table student_course {
+  id uuid [pk]
+  student_id uuid [ref: > student.id, note: 'ON DELETE CASCADE']
+  course_id uuid [ref: > lecture_course.id, note: 'ON DELETE CASCADE']
+  is_elective boolean [not null, default: false]
+  enrolled_at date
+
+  indexes {
+    (student_id, course_id) [unique]
+  }
+}
+
+// ======================== РАСПИСАНИЕ И ПОСЕЩАЕМОСТЬ ========================
+
+Table schedule {
+  id uuid [pk]
+  lecture_id uuid [ref: > lecture.id, note: 'ON DELETE CASCADE']
+  group_id uuid [ref: > student_group.id, note: 'ON DELETE CASCADE']
+  scheduled_date date [not null]
+  week_start_date date [not null]
+  start_time time
+  end_time time
+  classroom varchar(50)
+  teacher_name varchar(300)
+  status varchar(20) [default: 'scheduled']
+  created_at timestamp [default: `now()`]
+}
+
+// PARTITION BY RANGE (week_start_date) — недельные партиции на весь
+// учебный год; глобальных индексов в PostgreSQL нет, поэтому ключ
+// партиционирования обязан входить в первичный ключ.
+Table attendance {
+  id uuid [not null]
+  week_start_date date [not null]
+  schedule_id uuid [ref: > schedule.id, not null, note: 'ON DELETE CASCADE']
+  student_id uuid [ref: > student.id, not null, note: 'ON DELETE CASCADE']
+  is_present boolean [not null, default: true]
+  marked_at timestamp [default: `now()`]
+  note varchar(500)
+
+  indexes {
+    (id, week_start_date) [pk]
+    (schedule_id, student_id, week_start_date) [unique]
+    (student_id, week_start_date) [name: 'idx_attendance_student_week']
+  }
+}
+
+// ======================= ДЕНОРМАЛИЗОВАННЫЕ ПРОЕКЦИИ =======================
+// Не реляционные хранилища: показаны как Note, а не Table, т.к. в них нет
+// схемы/FK в понимании PostgreSQL. Идентификаторы совпадают с id выше.
+
+Note redis_projection {
+  '''
+  Redis — только карточки студентов, ключ = номер зачётки (task.md).
+
+  student:{card_number}      HASH    id, card_number, last_name, first_name,
+                                      patronymic, full_name, email, phone,
+                                      status, enrollment_date, group_id,
+                                      group_name, specialty_id, specialty_name,
+                                      specialty_code
+  student:id:{student.id}    STRING  вторичный индекс: uuid -> card_number
+  students                   SET     все card_number (для перечисления)
+
+  Источник: student ⋈ student_group ⋈ specialty (денормализовано в один HASH).
+  '''
+}
+
+Note mongo_projection {
+  '''
+  MongoDB — документы-композиции (task.md: «документ с данными и составом
+  группы»), коллекция БД university.
+
+  groups (_id = group.id)
+    name, enrollment_year, curator,
+    specialty: { id, name, code, degree_level, duration_years }   // embedded
+    students: [ { id, card_number, full_name, email, phone, status, ... } ]
+    students_count, courses: [ { id, name, semester, is_elective, lecture_hours } ]
+
+  courses (_id = lecture_course.id)
+    name, description, semester, is_elective, is_special_discipline,
+    hours: { total, lecture, practice, lab },
+    specialty: { id, name, code, degree_level, duration_years },
+    lectures: [ { id, title, order_number, computer_type, tags, duration_minutes } ],
+    lectures_count
+
+  Индексы: groups.name (unique), groups.specialty.code,
+  groups.students.card_number, courses.semester,
+  courses.is_special_discipline, courses.specialty.code.
+
+  Источник: student_group + student (embed) + specialty (embed) + lecture_course (embed);
+  lecture_course + lecture (embed) + specialty (embed).
+  '''
+}
+
+Note neo4j_projection {
+  '''
+  Neo4j — граф связей группа-студент-курс (task.md: «рассчитывая на
+  использование курсов по выбору»). Факты посещения сюда НЕ попадают —
+  их место в партиционированной attendance.
+
+  Узлы (id = UUID из PostgreSQL):
+    (:Specialty {id, name, code, degree_level})
+    (:Group {id, name, enrollment_year, curator})
+    (:Student {id, card_number, full_name, last_name, first_name,
+               patronymic, status})
+    (:Course {id, name, semester, is_elective, is_special_discipline,
+              lecture_hours})
+
+  Связи:
+    (:Specialty)-[:HAS_GROUP]->(:Group)
+    (:Group)-[:HAS_STUDENT]->(:Student)
+    (:Specialty)-[:OFFERS]->(:Course)
+    (:Student)-[:ENROLLED {is_elective, enrolled_at}]->(:Course)
+
+  Ограничения уникальности (= индексы) по id на каждой метке.
+  Соответствует таблицам specialty, student_group, student, lecture_course,
+  student_course (как реляция ENROLLED).
+  '''
+}
+
+Note elasticsearch_projection {
+  '''
+  Elasticsearch — полнотекстовый поиск (task.md: «данные с полнотекстовым
+  описанием курса»); не хранилище, а инвертированный индекс-фильтр:
+  возвращает id, дальше данные добираются из PostgreSQL/Neo4j/MongoDB.
+  Анализатор "russian" на текстовых полях.
+
+  index: lectures (_id = lecture.id)
+    lecture_id, course_id, course_name (text+keyword raw),
+    title (text), annotation (text) — термин лабы №1,
+    tags (keyword) — спец. дисциплина, лаба №3,
+    computer_type (keyword) — тех. средства, лаба №2,
+    semester, order_number (integer),
+    specialty_code, specialty_name (keyword),
+    is_elective, is_special_discipline (boolean)
+
+  index: courses (_id = lecture_course.id)
+    course_id, name (text+keyword raw), description (text),
+    semester (integer), specialty_code, specialty_name (keyword),
+    is_elective, is_special_discipline (boolean),
+    lecture_hours, total_hours (integer)
+
+  Источник: lecture ⋈ lecture_course ⋈ specialty (для lectures);
+  lecture_course ⋈ specialty (для courses).
+  '''
+}
+
+// ============================== ГРУППИРОВКА ==============================
+
+TableGroup "Организация" {
+  university
+  institute
+  department
+  specialty
+  department_specialties
+}
+
+TableGroup "Учебный план" {
+  lecture_course
+  lecture
+  lecture_material
+}
+
+TableGroup "Студенты" {
+  student_group
+  student
+  student_course
+}
+
+TableGroup "Расписание и посещаемость" {
+  schedule
+  attendance
+}

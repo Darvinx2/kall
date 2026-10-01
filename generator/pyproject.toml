@@ -1,0 +1,14 @@
+[project]
+name = "generator"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "elasticsearch>=9.5.1",
+    "faker>=40.39.0",
+    "neo4j>=6.3.1",
+    "psycopg[binary]>=3.3.5",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "pymongo>=4.18.1",
+    "redis>=8.1.0",
+]

@@ -1,4 +1,4 @@
-"""Отчёт лабы №1: одна функция, четыре хранилища подряд.
+"""Отчёт лабы №1: одна функция, три хранилища подряд.
 
 Задание: «извлечь отчёт о 10 студентах с минимальным процентом посещения
 лекций, содержащих заданный термин или фразу, за определённый период
@@ -24,9 +24,9 @@
    занятия из schedule (LEFT JOIN к attendance): если отметки нет, это
    пропуск, а не повод исключить занятие из отчёта. Фильтр по
    week_start_date идёт по ключу партиционирования, поэтому читаются
-   только недели из запрошенного диапазона.
-4. Redis — отдаёт карточки студентов по номеру зачётки за O(1), без join
-   к student/student_group/specialty в PostgreSQL.
+   только недели из запрошенного диапазона. Карточка студента (ФИО,
+   зачётка, группа, специальность) джойнится тут же, к student/
+   student_group/specialty — отдельного похода в Redis не нужно.
 """
 
 from datetime import date, timedelta
@@ -34,7 +34,6 @@ from datetime import date, timedelta
 from elasticsearch import AsyncElasticsearch
 from neo4j import AsyncDriver
 from psycopg_pool import AsyncConnectionPool
-from redis.asyncio import Redis
 
 __all__ = ("build_report",)
 
@@ -56,12 +55,25 @@ ATTENDANCE_SQL = """
         SELECT * FROM unnest(%(student_ids)s::uuid[], %(course_ids)s::uuid[])
                  AS e(student_id, course_id)
     )
-    SELECT st.id::text AS student_id,
-           count(*)                                    AS lectures_planned,
-           sum(coalesce(a.is_present::int, 0))          AS lectures_attended
+    SELECT st.id::text              AS student_id,
+           st.student_card_number   AS card_number,
+           st.last_name             AS last_name,
+           st.first_name            AS first_name,
+           st.patronymic            AS patronymic,
+           st.email                 AS email,
+           st.phone                 AS phone,
+           st.status                AS status,
+           st.enrollment_date       AS enrollment_date,
+           sg.name                  AS group_name,
+           sp.name                  AS specialty_name,
+           sp.code                  AS specialty_code,
+           count(*)                 AS lectures_planned,
+           sum(coalesce(a.is_present::int, 0)) AS lectures_attended
     FROM schedule sch
     JOIN lecture l ON l.id = sch.lecture_id
     JOIN student st ON st.group_id = sch.group_id
+    JOIN student_group sg ON sg.id = st.group_id
+    JOIN specialty sp ON sp.id = sg.specialty_id
     JOIN eligible e ON e.student_id = st.id AND e.course_id = l.course_id
     LEFT JOIN attendance a
            ON a.schedule_id = sch.id
@@ -71,7 +83,10 @@ ATTENDANCE_SQL = """
     WHERE sch.lecture_id = ANY(%(lecture_ids)s::uuid[])
       AND sch.week_start_date >= %(week_from)s
       AND sch.week_start_date <= %(week_to)s
-    GROUP BY st.id
+    -- Группировка по первичным ключам student/student_group/specialty:
+    -- Postgres выводит функциональную зависимость остальных их колонок
+    -- и не требует перечислять каждую в GROUP BY.
+    GROUP BY st.id, sg.id, sp.id
     ORDER BY sum(coalesce(a.is_present::int, 0))::numeric / count(*) ASC, st.id
     LIMIT %(limit)s
 """
@@ -82,15 +97,13 @@ async def build_report(
     elastic: AsyncElasticsearch,
     neo4j_driver: AsyncDriver,
     pg_pool: AsyncConnectionPool,
-    redis: Redis,
     term: str,
     period_from: date,
     period_to: date,
     limit: int,
 ) -> dict:
     # 1. Elasticsearch: термин -> лекции и курсы, которым они принадлежат.
-    # match_phrase, а не match: задание про термин ИЛИ ФРАЗУ, и «нейронные
-    # сети» не должно совпадать с текстом, где слова встретились порознь.
+    # match_phrase, а не match: задание про термин ИЛИ ФРАЗУ
     search = await elastic.search(
         index=LECTURES_INDEX,
         query={"match_phrase": {"annotation": term}},
@@ -138,30 +151,38 @@ async def build_report(
     if not rows:
         return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
 
-    # 4. Redis: id студента -> зачётка -> карточка. Два прохода pipeline
-    # вместо 2*N round-trip до сервера.
-    student_ids = [student_id for student_id, _, _ in rows]
-
-    pipe = redis.pipeline(transaction=False)
-    for student_id in student_ids:
-        pipe.get(f"student:id:{student_id}")
-    cards = await pipe.execute()
-
-    pipe = redis.pipeline(transaction=False)
-    for card in cards:
-        if card is not None:
-            pipe.hgetall(f"student:{card}")
-    profiles = await pipe.execute()
-    profiles_by_id = {p["id"]: p for p in profiles if p}
-
     items = []
-    for student_id, planned, attended in rows:
-        profile = profiles_by_id.get(student_id)
-        if profile is None:
-            continue
+    for (
+        student_id,
+        card_number,
+        last_name,
+        first_name,
+        patronymic,
+        email,
+        phone,
+        status,
+        enrollment_date,
+        group_name,
+        specialty_name,
+        specialty_code,
+        planned,
+        attended,
+    ) in rows:
         items.append(
             {
-                "student": profile,
+                "student": {
+                    "card_number": card_number,
+                    "last_name": last_name,
+                    "first_name": first_name,
+                    "patronymic": patronymic,
+                    "email": email,
+                    "phone": phone,
+                    "status": status,
+                    "enrollment_date": enrollment_date.isoformat(),
+                    "group_name": group_name,
+                    "specialty_name": specialty_name,
+                    "specialty_code": specialty_code,
+                },
                 "attendance_percent": round(100 * attended / planned, 1) if planned else 0.0,
                 "lectures_planned": planned,
                 "lectures_attended": attended,

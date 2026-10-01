@@ -9,9 +9,13 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH"
 
-# Отдельный слой: пересобирается только при изменении зависимостей.
+# uv.lock общий на весь workspace, но --package lab1 ставит только его
+# зависимости: не тянет pwdlib/pyjwt/python-multipart/faker/pymongo,
+# которые lab1 не импортирует. --frozen не требует pyproject.toml
+# остальных членов workspace на диске.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
+COPY lab1/pyproject.toml ./lab1/pyproject.toml
+RUN uv sync --frozen --package lab1 --no-install-project
 
 COPY lab1 ./lab1
 

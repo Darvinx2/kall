@@ -1,6 +1,6 @@
 """Точка входа lab1.
 
-Пулы соединений к четырём хранилищам создаются в lifespan — один раз на
+Пулы соединений к трём хранилищам создаются в lifespan — один раз на
 приложение — и складываются в app.state. Ручка в api/router.py читает
 их оттуда напрямую через request.app.state.
 """
@@ -11,7 +11,6 @@ from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI
 from neo4j import AsyncGraphDatabase
 from psycopg_pool import AsyncConnectionPool
-from redis.asyncio import Redis
 
 from lab1.app.api.router import router
 from lab1.app.config import SERVICE_VERSION, get_settings
@@ -26,7 +25,6 @@ async def lifespan(app: FastAPI):
     pool = AsyncConnectionPool(settings.postgres_dsn, min_size=1, max_size=5, open=False)
     await pool.open()
 
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
     elastic = AsyncElasticsearch(settings.elastic_url)
     neo4j_driver = AsyncGraphDatabase.driver(
         settings.neo4j_url,
@@ -34,7 +32,6 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.pg_pool = pool
-    app.state.redis = redis
     app.state.elastic = elastic
     app.state.neo4j = neo4j_driver
     try:
@@ -42,7 +39,6 @@ async def lifespan(app: FastAPI):
     finally:
         await neo4j_driver.close()
         await elastic.close()
-        await redis.aclose()
         await pool.close()
 
 
