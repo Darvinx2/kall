@@ -1,4 +1,4 @@
-"""Настройки подключения к трём хранилищам, которые использует лаба №1.
+"""Настройки подключения к четырём хранилищам, которые использует лаба №1.
 
 JWT здесь нет: токен проверяет только gateway. Лаба недоступна снаружи сети
 compose (порт наружу не публикуется), поэтому повторная проверка не нужна —
@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     elastic_port: int = 9201
     elastic_scheme: str = "http"
 
+    redis_host: str = "localhost"
+    redis_port: int = 6380
+    redis_db: int = 0
+
     neo4j_host: str = "localhost"
     neo4j_bolt_port: int = 7688
     neo4j_user: str = "neo4j"
@@ -52,6 +56,10 @@ class Settings(BaseSettings):
     @property
     def elastic_url(self) -> str:
         return f"{self.elastic_scheme}://{self.elastic_host}:{self.elastic_port}"
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def neo4j_url(self) -> str:

@@ -30,6 +30,7 @@ async def report(request: Request, body: ReportRequest) -> ReportResponse:
         elastic=request.app.state.elastic,
         neo4j_driver=request.app.state.neo4j,
         pg_pool=request.app.state.pg_pool,
+        redis_client=request.app.state.redis,
         term=body.term,
         period_from=body.period_from,
         period_to=body.period_to,

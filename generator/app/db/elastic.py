@@ -3,7 +3,8 @@
 Раскладка по task.md: «Для ElasticSearch – данные с полнотекстовым описанием
 курса».
 
-    lectures  аннотации лекций + метаданные (теги, тех. средства, семестр)
+    lectures  аннотации и тексты материалов + метаданные (теги, тех.
+              средства, тип занятия, семестр)
     courses   описания курсов
 
 Elasticsearch здесь — не хранилище, а инвертированный индекс-фильтр: он
@@ -39,15 +40,19 @@ MAPPINGS: dict[str, dict] = {
             "title": {"type": "text", "analyzer": "russian"},
             # Лаба №1 ищет термин здесь, лаба №2 — упоминание тех. средств.
             "annotation": {"type": "text", "analyzer": "russian"},
+            # Тексты всех материалов занятия, склеенные в одно поле:
+            # аннотация коротка, содержание занятия живёт в материалах.
+            "content_text": {"type": "text", "analyzer": "russian"},
+            "materials_count": {"type": "integer"},
             # Лаба №3 фильтрует по тегу — точное совпадение, поэтому keyword.
             "tags": {"type": "keyword"},
             "computer_type": {"type": "keyword"},
+            # Лаба №1 считает процент только по лекциям — точный фильтр.
+            "lecture_type": {"type": "keyword"},
             "semester": {"type": "integer"},
             "order_number": {"type": "integer"},
             "specialty_code": {"type": "keyword"},
             "specialty_name": {"type": "keyword"},
-            "is_elective": {"type": "boolean"},
-            "is_special_discipline": {"type": "boolean"},
         }
     },
     COURSES: {
@@ -62,8 +67,6 @@ MAPPINGS: dict[str, dict] = {
             "semester": {"type": "integer"},
             "specialty_code": {"type": "keyword"},
             "specialty_name": {"type": "keyword"},
-            "is_elective": {"type": "boolean"},
-            "is_special_discipline": {"type": "boolean"},
             "lecture_hours": {"type": "integer"},
             "total_hours": {"type": "integer"},
         }
@@ -85,6 +88,14 @@ def load(client: Elasticsearch, data: Dataset) -> None:
         # стандартный анализатор вместо russian.
         client.indices.create(index=index, mappings=mapping)
 
+    # Материалы склеиваются по занятию: в Elasticsearch нет join, а искать
+    # нужно по занятию целиком, а не по каждому файлу отдельно.
+    materials_by_lecture: dict[str, list[str]] = {}
+    for material in data.lecture_materials:
+        materials_by_lecture.setdefault(str(material.lecture_id), []).append(
+            material.content_text
+        )
+
     lecture_docs = []
     for lecture in data.lectures:
         course = courses[lecture.course_id]
@@ -98,14 +109,15 @@ def load(client: Elasticsearch, data: Dataset) -> None:
                 "course_name": course.name,
                 "title": lecture.title,
                 "annotation": lecture.annotation,
+                "content_text": " ".join(materials_by_lecture.get(str(lecture.id), [])),
+                "materials_count": len(materials_by_lecture.get(str(lecture.id), [])),
                 "tags": lecture.tags,
                 "computer_type": lecture.computer_type,
+                "lecture_type": lecture.lecture_type,
                 "semester": course.semester,
                 "order_number": lecture.order_number,
                 "specialty_code": specialty.code,
                 "specialty_name": specialty.name,
-                "is_elective": course.is_elective,
-                "is_special_discipline": course.is_special_discipline,
             }
         )
 
@@ -119,8 +131,6 @@ def load(client: Elasticsearch, data: Dataset) -> None:
             "semester": course.semester,
             "specialty_code": specialties[course.specialty_id].code,
             "specialty_name": specialties[course.specialty_id].name,
-            "is_elective": course.is_elective,
-            "is_special_discipline": course.is_special_discipline,
             "lecture_hours": course.lecture_hours,
             "total_hours": course.total_hours,
         }

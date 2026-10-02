@@ -17,6 +17,7 @@ __all__ = (
     "DepartmentSpecialty",
     "Course",
     "Lecture",
+    "LectureMaterial",
     "Group",
     "Student",
     "StudentCourse",
@@ -83,8 +84,6 @@ class Course:
     lecture_hours: int
     practice_hours: int
     lab_hours: int
-    is_elective: bool
-    is_special_discipline: bool
 
 
 @dataclass(slots=True)
@@ -98,6 +97,17 @@ class Lecture:
     tags: list[str]
     order_number: int
     duration_minutes: int
+
+
+@dataclass(slots=True)
+class LectureMaterial:
+    id: UUID
+    lecture_id: UUID
+    content_type: str
+    title: str
+    content_text: str
+    file_url: str
+    metadata: dict
 
 
 @dataclass(slots=True)
@@ -129,7 +139,6 @@ class StudentCourse:
     id: UUID
     student_id: UUID
     course_id: UUID
-    is_elective: bool
     enrolled_at: date
 
 
@@ -154,6 +163,7 @@ class Attendance:
     schedule_id: UUID
     student_id: UUID
     is_present: bool
+    marked_by: str
     note: str | None
 
 
@@ -166,6 +176,7 @@ class Dataset:
     department_specialties: list[DepartmentSpecialty] = field(default_factory=list)
     courses: list[Course] = field(default_factory=list)
     lectures: list[Lecture] = field(default_factory=list)
+    lecture_materials: list[LectureMaterial] = field(default_factory=list)
     groups: list[Group] = field(default_factory=list)
     students: list[Student] = field(default_factory=list)
     student_courses: list[StudentCourse] = field(default_factory=list)

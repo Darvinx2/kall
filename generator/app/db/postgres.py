@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import psycopg
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from generator.app.config import get_settings
 from generator.app.data import ACADEMIC_WEEKS, ACADEMIC_YEAR_START
@@ -26,53 +27,59 @@ DDL: tuple[str, ...] = (
         address TEXT,
         website VARCHAR(255),
         founded_year INT,
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS institute (
         id UUID PRIMARY KEY,
-        university_id UUID REFERENCES university(id) ON DELETE CASCADE,
+        university_id UUID NOT NULL REFERENCES university(id) ON DELETE CASCADE,
         name VARCHAR(500) NOT NULL,
         short_name VARCHAR(100),
         dean VARCHAR(300),
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS department (
         id UUID PRIMARY KEY,
-        institute_id UUID REFERENCES institute(id) ON DELETE CASCADE,
+        institute_id UUID NOT NULL REFERENCES institute(id) ON DELETE CASCADE,
         name VARCHAR(500) NOT NULL,
         short_name VARCHAR(100),
         head VARCHAR(300),
         room VARCHAR(50),
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS specialty (
         id UUID PRIMARY KEY,
         name VARCHAR(500) NOT NULL,
-        code VARCHAR(20) NOT NULL,
+        code VARCHAR(20) NOT NULL UNIQUE,
         degree_level VARCHAR(20),
         duration_years INT,
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS department_specialties (
         id UUID PRIMARY KEY,
-        department_id UUID REFERENCES department(id) ON DELETE CASCADE,
-        specialty_id UUID REFERENCES specialty(id) ON DELETE CASCADE,
+        department_id UUID NOT NULL REFERENCES department(id) ON DELETE CASCADE,
+        specialty_id UUID NOT NULL REFERENCES specialty(id) ON DELETE CASCADE,
         is_primary BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (department_id, specialty_id)
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS lecture_course (
         id UUID PRIMARY KEY,
-        specialty_id UUID REFERENCES specialty(id) ON DELETE CASCADE,
+        specialty_id UUID NOT NULL REFERENCES specialty(id) ON DELETE CASCADE,
         name VARCHAR(500) NOT NULL,
         description TEXT,
         semester INT CHECK (semester IN (1, 2)),
@@ -80,15 +87,14 @@ DDL: tuple[str, ...] = (
         lecture_hours INT,
         practice_hours INT,
         lab_hours INT,
-        -- Курс по выбору: на нём держатся лабы №2 и №3.
-        is_elective BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS lecture (
         id UUID PRIMARY KEY,
-        course_id UUID REFERENCES lecture_course(id) ON DELETE CASCADE,
+        course_id UUID NOT NULL REFERENCES lecture_course(id) ON DELETE CASCADE,
         title VARCHAR(500) NOT NULL,
         -- В annotation лаба №1 ищет заданный термин.
         annotation TEXT,
@@ -99,61 +105,55 @@ DDL: tuple[str, ...] = (
         tags TEXT[],
         order_number INT,
         duration_minutes INT DEFAULT 90,
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS lecture_material (
         id UUID PRIMARY KEY,
-        lecture_id UUID REFERENCES lecture(id) ON DELETE CASCADE,
+        lecture_id UUID NOT NULL REFERENCES lecture(id) ON DELETE CASCADE,
         content_type VARCHAR(50),
         title VARCHAR(500),
         content_text TEXT,
         file_url VARCHAR(1000),
         metadata JSONB,
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS student_group (
         id UUID PRIMARY KEY,
-        specialty_id UUID REFERENCES specialty(id) ON DELETE CASCADE,
-        name VARCHAR(50) NOT NULL,
+        specialty_id UUID NOT NULL REFERENCES specialty(id) ON DELETE CASCADE,
+        name VARCHAR(50) NOT NULL UNIQUE,
         enrollment_year INT,
         curator VARCHAR(300),
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS student (
         id UUID PRIMARY KEY,
-        group_id UUID REFERENCES student_group(id) ON DELETE CASCADE,
+        group_id UUID NOT NULL REFERENCES student_group(id) ON DELETE CASCADE,
         first_name VARCHAR(100) NOT NULL,
         last_name VARCHAR(100) NOT NULL,
         patronymic VARCHAR(100),
-        email VARCHAR(255),
+        email VARCHAR(255) UNIQUE,
         phone VARCHAR(20),
         student_card_number VARCHAR(20) UNIQUE,
         enrollment_date DATE,
         status VARCHAR(20) DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT NOW()
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS student_course (
-        id UUID PRIMARY KEY,
-        student_id UUID REFERENCES student(id) ON DELETE CASCADE,
-        course_id UUID REFERENCES lecture_course(id) ON DELETE CASCADE,
-        is_elective BOOLEAN NOT NULL DEFAULT FALSE,
-        enrolled_at DATE,
-        UNIQUE (student_id, course_id)
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS schedule (
         id UUID PRIMARY KEY,
-        lecture_id UUID REFERENCES lecture(id) ON DELETE CASCADE,
-        group_id UUID REFERENCES student_group(id) ON DELETE CASCADE,
+        lecture_id UUID NOT NULL REFERENCES lecture(id) ON DELETE CASCADE,
+        group_id UUID NOT NULL REFERENCES student_group(id) ON DELETE CASCADE,
         scheduled_date DATE NOT NULL,
         week_start_date DATE NOT NULL,
         start_time TIME,
@@ -161,7 +161,8 @@ DDL: tuple[str, ...] = (
         classroom VARCHAR(50),
         teacher_name VARCHAR(300),
         status VARCHAR(20) DEFAULT 'scheduled',
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
     )
     """,
     """
@@ -172,7 +173,11 @@ DDL: tuple[str, ...] = (
         student_id UUID NOT NULL REFERENCES student(id) ON DELETE CASCADE,
         is_present BOOLEAN NOT NULL DEFAULT TRUE,
         marked_at TIMESTAMP DEFAULT NOW(),
+        -- Кто поставил отметку: преподаватель, который вёл занятие.
+        marked_by VARCHAR(300),
         note VARCHAR(500),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
         -- Ключ партиционирования обязан входить в первичный ключ:
         -- глобальных индексов в PostgreSQL нет, каждый живёт внутри партиции.
         PRIMARY KEY (id, week_start_date),
@@ -188,8 +193,6 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_schedule_group ON schedule (group_id)",
     "CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule (scheduled_date)",
     "CREATE INDEX IF NOT EXISTS idx_student_group ON student (group_id)",
-    "CREATE INDEX IF NOT EXISTS idx_student_course_student ON student_course (student_id)",
-    "CREATE INDEX IF NOT EXISTS idx_student_course_course ON student_course (course_id)",
     "CREATE INDEX IF NOT EXISTS idx_lecture_course ON lecture (course_id)",
     # По массиву тегов работает только GIN — btree тут бесполезен.
     "CREATE INDEX IF NOT EXISTS idx_lecture_tags ON lecture USING GIN (tags)",
@@ -197,12 +200,22 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_student_group_specialty ON student_group (specialty_id)",
 )
 
+# updated_at сам себя не обновит: DEFAULT срабатывает только на INSERT.
+# Одна функция на всю схему, триггер — на каждую таблицу.
+UPDATED_AT_FUNCTION = """
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at := NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+"""
+
 # Для удаления — в обратном порядке; CASCADE снимает зависимости,
 # а DROP родителя attendance уносит все её партиции.
 TABLES: tuple[str, ...] = (
     "attendance",
     "schedule",
-    "student_course",
     "student",
     "student_group",
     "lecture_material",
@@ -230,6 +243,7 @@ def create_tables(conn: psycopg.Connection) -> None:
     _create_attendance_partitions(conn)
     for statement in INDEXES:
         conn.execute(statement)
+    _create_updated_at_triggers(conn)
 
 
 def drop_tables(conn: psycopg.Connection) -> None:
@@ -239,6 +253,29 @@ def drop_tables(conn: psycopg.Connection) -> None:
             sql.SQL(", ").join(sql.Identifier(name) for name in TABLES)
         )
     )
+    # Триггеры уходят вместе с таблицами, функция — нет.
+    conn.execute("DROP FUNCTION IF EXISTS set_updated_at()")
+
+
+def _create_updated_at_triggers(conn: psycopg.Connection) -> None:
+    """Вешает BEFORE UPDATE на каждую таблицу схемы.
+
+    CREATE OR REPLACE TRIGGER — с PostgreSQL 14, поэтому пересоздание схемы
+    не требует предварительного DROP. На партиционированной attendance
+    строковый триггер объявляется на родителе и автоматически наследуется
+    всеми партициями, включая создаваемые позже.
+    """
+    conn.execute(UPDATED_AT_FUNCTION)
+    for table in TABLES:
+        conn.execute(
+            sql.SQL(
+                "CREATE OR REPLACE TRIGGER {name} BEFORE UPDATE ON {table} "
+                "FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+            ).format(
+                name=sql.Identifier(f"trg_{table}_updated_at"),
+                table=sql.Identifier(table),
+            )
+        )
 
 
 def _create_attendance_partitions(conn: psycopg.Connection) -> None:
@@ -311,13 +348,12 @@ def load(conn: psycopg.Connection, data: Dataset) -> None:
         )
         cur.executemany(
             "INSERT INTO lecture_course (id, specialty_id, name, description, semester,"
-            " total_hours, lecture_hours, practice_hours, lab_hours, is_elective)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " total_hours, lecture_hours, practice_hours, lab_hours)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             [
                 (
                     c.id, c.specialty_id, c.name, c.description, c.semester,
                     c.total_hours, c.lecture_hours, c.practice_hours, c.lab_hours,
-                    c.is_elective,
                 )
                 for c in data.courses
             ],
@@ -332,6 +368,19 @@ def load(conn: psycopg.Connection, data: Dataset) -> None:
                     lec.computer_type, lec.tags, lec.order_number, lec.duration_minutes,
                 )
                 for lec in data.lectures
+            ],
+        )
+        # metadata — JSONB: psycopg сам сериализует dict только через Jsonb.
+        cur.executemany(
+            "INSERT INTO lecture_material (id, lecture_id, content_type, title,"
+            " content_text, file_url, metadata)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            [
+                (
+                    m.id, m.lecture_id, m.content_type, m.title,
+                    m.content_text, m.file_url, Jsonb(m.metadata),
+                )
+                for m in data.lecture_materials
             ],
         )
         cur.executemany(
@@ -355,14 +404,6 @@ def load(conn: psycopg.Connection, data: Dataset) -> None:
             ],
         )
         cur.executemany(
-            "INSERT INTO student_course (id, student_id, course_id, is_elective, enrolled_at)"
-            " VALUES (%s, %s, %s, %s, %s)",
-            [
-                (sc.id, sc.student_id, sc.course_id, sc.is_elective, sc.enrolled_at)
-                for sc in data.student_courses
-            ],
-        )
-        cur.executemany(
             "INSERT INTO schedule (id, lecture_id, group_id, scheduled_date, week_start_date,"
             " start_time, end_time, classroom, teacher_name, status)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -380,11 +421,11 @@ def load(conn: psycopg.Connection, data: Dataset) -> None:
         # COPY в партиционированную таблицу поддерживается с PostgreSQL 11:
         # строки маршрутизируются по ключу так же, как при обычной вставке.
         with cur.copy(
-            "COPY attendance (id, week_start_date, schedule_id, student_id, is_present, note)"
-            " FROM STDIN"
+            "COPY attendance (id, week_start_date, schedule_id, student_id, is_present,"
+            " marked_by, note) FROM STDIN"
         ) as copy:
             for row in data.attendance:
                 copy.write_row(
                     (row.id, row.week_start_date, row.schedule_id, row.student_id,
-                     row.is_present, row.note)
+                     row.is_present, row.marked_by, row.note)
                 )

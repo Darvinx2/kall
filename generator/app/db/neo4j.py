@@ -1,16 +1,15 @@
 """Neo4j: граф связей группа — студент — курс.
 
-Раскладка по task.md: «Для Neo4J – связи между группой-студентом-курсом,
-рассчитывая на использование курсов по выбору».
+Раскладка по task.md: «Для Neo4J – связи между группой-студентом-курсом».
 
     (:Specialty)-[:HAS_GROUP]->(:Group)-[:HAS_STUDENT]->(:Student)
     (:Specialty)-[:OFFERS]->(:Course)
-    (:Student)-[:ENROLLED {is_elective}]->(:Course)
+    (:Student)-[:ENROLLED]->(:Course)
 
 Граф хранит структуру связей, но НЕ факты посещения: их десятки тысяч и они
 растут со временем — им место в партиционированной таблице PostgreSQL.
-Здесь отвечают на вопросы обхода: кто реально слушает курс с учётом выборных
-(лаба №2) и какой набор курсов у каждого студента группы (лаба №3).
+Здесь отвечают на вопросы обхода: кто слушает курс (лаба №2) и какой набор
+курсов у каждого студента группы (лаба №3).
 """
 
 from neo4j import Driver, GraphDatabase
@@ -110,8 +109,6 @@ def load(driver: Driver, data: Dataset) -> None:
             "UNWIND $rows AS row "
             "MERGE (c:Course {id: row.id}) "
             "SET c.name = row.name, c.semester = row.semester, "
-            "    c.is_elective = row.is_elective, "
-            "    c.is_special_discipline = row.is_special_discipline, "
             "    c.lecture_hours = row.lecture_hours "
             "WITH c, row "
             "MATCH (s:Specialty {id: row.specialty_id}) "
@@ -121,8 +118,6 @@ def load(driver: Driver, data: Dataset) -> None:
                     "id": str(c.id),
                     "name": c.name,
                     "semester": c.semester,
-                    "is_elective": c.is_elective,
-                    "is_special_discipline": c.is_special_discipline,
                     "lecture_hours": c.lecture_hours,
                     "specialty_id": str(c.specialty_id),
                 }
@@ -130,18 +125,17 @@ def load(driver: Driver, data: Dataset) -> None:
             ],
         )
 
-        # Связь студент-курс с признаком «по выбору» — ради неё Neo4j и нужен.
+        # Связь студент-курс — ядро графа: «группа-студент-курс» из task.md.
         session.run(
             "UNWIND $rows AS row "
             "MATCH (st:Student {id: row.student_id}) "
             "MATCH (c:Course {id: row.course_id}) "
             "MERGE (st)-[e:ENROLLED]->(c) "
-            "SET e.is_elective = row.is_elective, e.enrolled_at = row.enrolled_at",
+            "SET e.enrolled_at = row.enrolled_at",
             rows=[
                 {
                     "student_id": str(sc.student_id),
                     "course_id": str(sc.course_id),
-                    "is_elective": sc.is_elective,
                     "enrolled_at": sc.enrolled_at.isoformat(),
                 }
                 for sc in data.student_courses

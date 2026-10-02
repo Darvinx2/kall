@@ -1,12 +1,13 @@
 """Точка входа lab1.
 
-Пулы соединений к трём хранилищам создаются в lifespan — один раз на
+Пулы соединений к четырём хранилищам создаются в lifespan — один раз на
 приложение — и складываются в app.state. Ручка в api/router.py читает
 их оттуда напрямую через request.app.state.
 """
 
 from contextlib import asynccontextmanager
 
+import redis.asyncio as aioredis
 from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI
 from neo4j import AsyncGraphDatabase
@@ -26,6 +27,9 @@ async def lifespan(app: FastAPI):
     await pool.open()
 
     elastic = AsyncElasticsearch(settings.elastic_url)
+    # decode_responses=True: иначе каждое поле HASH приезжает в bytes
+    # и всю карточку пришлось бы декодировать вручную.
+    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     neo4j_driver = AsyncGraphDatabase.driver(
         settings.neo4j_url,
         auth=(settings.neo4j_user, settings.neo4j_password.get_secret_value()),
@@ -34,9 +38,11 @@ async def lifespan(app: FastAPI):
     app.state.pg_pool = pool
     app.state.elastic = elastic
     app.state.neo4j = neo4j_driver
+    app.state.redis = redis_client
     try:
         yield
     finally:
+        await redis_client.aclose()
         await neo4j_driver.close()
         await elastic.close()
         await pool.close()

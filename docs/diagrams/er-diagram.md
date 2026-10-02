@@ -1,3 +1,16 @@
+# ER-диаграмма PostgreSQL (dbdiagram.io)
+
+Код ниже вставляется целиком в [dbdiagram.io](https://dbdiagram.io) и даёт
+Схему 1 для отчёта. Он соответствует DDL из `generator/app/db/postgres.py`
+на ветке `feature/lab1-redis`.
+
+**12 таблиц, 13 связей.** PostgreSQL — источник истины; Redis, MongoDB,
+Neo4j и Elasticsearch описаны Note-блоками в конце, из них собирается
+Схема 2 (размещение данных по хранилищам).
+
+## Код для dbdiagram.io
+
+```dbml
 Project UniversityMicroservices {
   database_type: 'PostgreSQL'
   Note: '''
@@ -335,3 +348,38 @@ TableGroup "Расписание и посещаемость" {
   schedule
   attendance
 }
+```
+
+## Отличия от Схемы 1 в практической работе №3
+
+| Что | Было на схеме | Стало |
+|---|---|---|
+| `special_courses` | отдельная таблица, дублирует все колонки `lecture_courses` | удалена; спец. дисциплина кафедры определяется тегом в `lecture.tags`, как требует задание на лабу №3 |
+| `attendance.is_present` | отсутствует | добавлен `BOOLEAN NOT NULL DEFAULT TRUE` — без него не посчитать процент посещения |
+| `lecture.computer_type` | отсутствует | `VARCHAR(100)` — требования к тех. средствам, лаба №2 |
+| `lecture.tags` | отсутствует | `TEXT[]` с GIN-индексом — тег спец. дисциплины, лаба №3 |
+| `lecture.lecture_type` | формальное поле | три значения: лекция / практика / лабораторная; лаба №1 считает процент только по лекциям |
+| `schedule.classroom_equipment` | есть | удалено — оснащение аудитории нигде не используется |
+| `updated_at` | нет в `department_specialties` и `attendance` | есть во всех 12 таблицах, обновляется триггером `set_updated_at()` |
+| PK `attendance` | показан как обычное поле `id` | составной `PRIMARY KEY (id, week_start_date)` |
+| Партиционирование | не показано | `PARTITION BY RANGE (week_start_date)`, 44 недельные партиции на учебный год |
+| `UNIQUE` в `attendance` | нет | `(schedule_id, student_id, week_start_date)` — защита от двойной отметки |
+| `CHECK` семестра | не показан | `semester IN (1, 2)` |
+| `ON DELETE CASCADE` | не отражён | указан примечанием на каждом внешнем ключе |
+| Имена таблиц | множественное число | единственное, как в DDL |
+
+### Чего в диаграмме сознательно нет
+
+Связь «студент — курс» в PostgreSQL не хранится. По `task.md` её место в
+графе: `(:Student)-[:ENROLLED]->(:Course)` в Neo4j, откуда лаба №1 и берёт
+пары (студент, курс) на втором шаге. В реляционной схеме дублировать её
+незачем — ни один SQL-запрос к ней не обращается.
+
+### Что забрали из схемы в отчёте
+
+Два места, где исходная диаграмма была строже кода, теперь перенесены
+в DDL — их же требует и Go-реализация `university`:
+
+1. **Обязательность внешних ключей** — `NOT NULL` на всех 13 FK.
+2. **Уникальность** — `specialty.code`, `student_group.name`,
+   `student.email` и пара `(department_id, specialty_id)`.

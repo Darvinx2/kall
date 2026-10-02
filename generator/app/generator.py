@@ -44,7 +44,10 @@ def load_postgres(data: Dataset, *, recreate: bool = True) -> None:
 
         counts = {
             table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-            for table in ("student", "lecture_course", "lecture", "schedule", "attendance")
+            for table in (
+                "student", "lecture_course", "lecture", "lecture_material",
+                "schedule", "attendance",
+            )
         }
     print("PostgreSQL:   " + ", ".join(f"{k}={v}" for k, v in counts.items()))
 
@@ -71,9 +74,10 @@ def load_mongo(data: Dataset, *, recreate: bool = True) -> None:
         db = mongo.database(client)
         groups = db[mongo.GROUPS].count_documents({})
         courses = db[mongo.COURSES].count_documents({})
+        university = db[mongo.UNIVERSITY].count_documents({})
     finally:
         client.close()
-    print(f"MongoDB:      groups={groups}, courses={courses}")
+    print(f"MongoDB:      groups={groups}, courses={courses}, university={university}")
 
 
 def load_neo4j(data: Dataset, *, recreate: bool = True) -> None:
@@ -85,12 +89,12 @@ def load_neo4j(data: Dataset, *, recreate: bool = True) -> None:
         with driver.session() as session:
             nodes = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
             rels = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
-            electives = session.run(
-                "MATCH ()-[r:ENROLLED]->() WHERE r.is_elective RETURN count(r) AS c"
+            enrolled = session.run(
+                "MATCH ()-[r:ENROLLED]->() RETURN count(r) AS c"
             ).single()["c"]
     finally:
         driver.close()
-    print(f"Neo4j:        узлов={nodes}, связей={rels} (ENROLLED по выбору={electives})")
+    print(f"Neo4j:        узлов={nodes}, связей={rels} (ENROLLED={enrolled})")
 
 
 def load_elastic(data: Dataset, *, recreate: bool = True) -> None:

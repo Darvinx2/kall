@@ -23,6 +23,7 @@ from generator.app.models import (
     Group,
     Institute,
     Lecture,
+    LectureMaterial,
     Schedule,
     Specialty,
     Student,
@@ -54,10 +55,19 @@ DEPARTMENTS = 2
 SPECIALTIES = 3
 GROUPS_PER_SPECIALTY = 2
 STUDENTS_PER_GROUP = (20, 25)
-MANDATORY_COURSES_PER_SPECIALTY = 3
-ELECTIVE_COURSES_PER_SPECIALTY = 2
+COURSES_PER_SPECIALTY = 5
+
+# Состав курса по заданию: «лекционные курсы и практические занятия».
+# Одно занятие — 2 академических часа, отсюда и часы курса.
 LECTURES_PER_COURSE = 16
-ELECTIVES_CHOSEN_BY_STUDENT = (1, 2)
+PRACTICES_PER_COURSE = 8
+LABS_PER_COURSE = 4
+LESSON_PLAN = (
+    ("лекция", LECTURES_PER_COURSE),
+    ("практика", PRACTICES_PER_COURSE),
+    ("лабораторная", LABS_PER_COURSE),
+)
+ACADEMIC_HOURS_PER_LESSON = 2
 
 # --- Лаба №1: термин, который ищут в аннотациях лекций ---
 SEARCH_TERM = "нейронные сети"
@@ -69,6 +79,17 @@ COMPUTER_TYPES = (
     "интерактивная доска",
     "компьютерный класс",
     "без оборудования",
+)
+
+# --- Материалы к занятиям ---
+# Их content_text склеивается в поле индекса Elasticsearch, поэтому термин
+# лабы №1 должен встречаться и здесь, а не только в аннотации.
+MATERIALS_PER_LECTURE = (1, 3)
+MATERIAL_TYPES = (
+    ("конспект", "pdf"),
+    ("презентация", "pptx"),
+    ("видеозапись", "mp4"),
+    ("исходный код", "zip"),
 )
 
 # --- Лаба №3: тег специальной дисциплины кафедры ---
@@ -137,6 +158,44 @@ LECTURE_TOPICS = (
 # =========================== ГЕНЕРАЦИЯ ===========================
 
 
+def _build_materials(
+    lecture: Lecture, rnd: random.Random, fake: Faker
+) -> list[LectureMaterial]:
+    """1-3 материала на занятие.
+
+    Текст материала — основной источник полнотекста для Elasticsearch:
+    аннотация короткая, а задание требует искать термин в содержании
+    занятия. Поэтому термин попадает и сюда, с той же вероятностью.
+    """
+    materials = []
+    for index in range(rnd.randint(*MATERIALS_PER_LECTURE)):
+        content_type, extension = rnd.choice(MATERIAL_TYPES)
+        content_text = " ".join(fake.paragraph(nb_sentences=5) for _ in range(3))
+        if rnd.random() < SEARCH_TERM_SHARE:
+            content_text = f"В материале подробно разбираются {SEARCH_TERM}. {content_text}"
+
+        material_id = uuid4()
+        materials.append(
+            LectureMaterial(
+                id=material_id,
+                lecture_id=lecture.id,
+                content_type=content_type,
+                title=f"{content_type.capitalize()}: {lecture.title}",
+                content_text=content_text,
+                file_url=f"https://files.university.local/{material_id}.{extension}",
+                # JSONB: у разных типов материалов разный набор атрибутов —
+                # ради этого колонка документная, а не набор полей.
+                metadata={
+                    "order": index + 1,
+                    "size_kb": rnd.randint(200, 25_000),
+                    "pages": rnd.randint(5, 60) if extension in ("pdf", "pptx") else None,
+                    "duration_sec": rnd.randint(600, 5400) if extension == "mp4" else None,
+                },
+            )
+        )
+    return materials
+
+
 def generate(seed: int = SEED) -> Dataset:
     rnd = random.Random(seed)
     fake = Faker("ru_RU")
@@ -203,12 +262,15 @@ def generate(seed: int = SEED) -> Dataset:
     topic_iter = iter(topics * 3)
 
     for specialty in data.specialties:
-        total = MANDATORY_COURSES_PER_SPECIALTY + ELECTIVE_COURSES_PER_SPECIALTY
-        for index in range(total):
-            is_elective = index >= MANDATORY_COURSES_PER_SPECIALTY
+        for index in range(COURSES_PER_SPECIALTY):
+            # Признака спец. дисциплины в схеме нет: по заданию она
+            # определяется тегом на лекции, поэтому флаг нужен только здесь,
+            # чтобы решить, вешать тег или нет.
             is_special = rnd.random() < SPECIAL_DISCIPLINE_SHARE
             semester = 1 if index % 2 == 0 else 2
-            lecture_hours = LECTURES_PER_COURSE * 2
+            lecture_hours = LECTURES_PER_COURSE * ACADEMIC_HOURS_PER_LESSON
+            practice_hours = PRACTICES_PER_COURSE * ACADEMIC_HOURS_PER_LESSON
+            lab_hours = LABS_PER_COURSE * ACADEMIC_HOURS_PER_LESSON
 
             course = Course(
                 id=uuid4(),
@@ -216,12 +278,10 @@ def generate(seed: int = SEED) -> Dataset:
                 name=next(topic_iter),
                 description=fake.paragraph(nb_sentences=4),
                 semester=semester,
-                total_hours=lecture_hours + 32 + 16,
+                total_hours=lecture_hours + practice_hours + lab_hours,
                 lecture_hours=lecture_hours,
-                practice_hours=32,
-                lab_hours=16,
-                is_elective=is_elective,
-                is_special_discipline=is_special,
+                practice_hours=practice_hours,
+                lab_hours=lab_hours,
             )
             data.courses.append(course)
 
@@ -229,34 +289,37 @@ def generate(seed: int = SEED) -> Dataset:
             if is_special:
                 course_tags.append(SPECIAL_DISCIPLINE_TAG)
 
-            for number in range(LECTURES_PER_COURSE):
-                computer_type = rnd.choice(COMPUTER_TYPES)
+            order_number = 0
+            for lesson_type, lessons_count in LESSON_PLAN:
+                for number in range(lessons_count):
+                    order_number += 1
+                    computer_type = rnd.choice(COMPUTER_TYPES)
 
-                annotation = fake.paragraph(nb_sentences=3)
-                if rnd.random() < SEARCH_TERM_SHARE:
-                    # Термин вставляется явно — лаба №1 обязана его найти.
-                    annotation = (
-                        f"Рассматриваются {SEARCH_TERM} и их применение "
-                        f"в прикладных задачах. {annotation}"
-                    )
-                if computer_type != "без оборудования":
-                    # Требование к тех. средствам дублируется в текст:
-                    # лаба №2 ищет его полнотекстовым запросом.
-                    annotation = f"{annotation} Для проведения требуется {computer_type}."
+                    annotation = fake.paragraph(nb_sentences=3)
+                    if rnd.random() < SEARCH_TERM_SHARE:
+                        # Термин вставляется явно — лаба №1 обязана его найти.
+                        annotation = (
+                            f"Рассматриваются {SEARCH_TERM} и их применение "
+                            f"в прикладных задачах. {annotation}"
+                        )
+                    if computer_type != "без оборудования":
+                        # Требование к тех. средствам дублируется в текст:
+                        # лаба №2 ищет его полнотекстовым запросом.
+                        annotation = f"{annotation} Для проведения требуется {computer_type}."
 
-                data.lectures.append(
-                    Lecture(
+                    lecture = Lecture(
                         id=uuid4(),
                         course_id=course.id,
                         title=LECTURE_TOPICS[number % len(LECTURE_TOPICS)],
                         annotation=annotation,
-                        lecture_type="лекция",
+                        lecture_type=lesson_type,
                         computer_type=computer_type,
                         tags=list(course_tags),
-                        order_number=number + 1,
+                        order_number=order_number,
                         duration_minutes=90,
                     )
-                )
+                    data.lectures.append(lecture)
+                    data.lecture_materials.extend(_build_materials(lecture, rnd, fake))
 
     # --- Группы и студенты ---
     abbr_by_code = {code: abbr for _name, code, abbr in SPECIALTY_NAMES}
@@ -297,6 +360,7 @@ def generate(seed: int = SEED) -> Dataset:
                 # в PostgreSQL на этом поле UNIQUE, и случайные номера
                 # сталкивались бы примерно в каждом четвёртом прогоне.
                 card_counter += 1
+                card_number = f"{group.enrollment_year}{card_counter:05d}"
 
                 data.students.append(
                     Student(
@@ -305,9 +369,12 @@ def generate(seed: int = SEED) -> Dataset:
                         first_name=first_name,
                         last_name=last_name,
                         patronymic=patronymic,
-                        email=fake.email(),
+                        # Почта строится из номера зачётки, а не fake.email():
+                        # на email теперь UNIQUE, а случайные адреса faker
+                        # повторяются тем чаще, чем больше студентов.
+                        email=f"{card_number}@edu.mirea.ru",
                         phone=fake.phone_number()[:20],
-                        student_card_number=f"{group.enrollment_year}{card_counter:05d}",
+                        student_card_number=card_number,
                         enrollment_date=date(group.enrollment_year, 9, 1),
                         status="active",
                         diligence=rnd.uniform(low, high),
@@ -326,21 +393,13 @@ def generate(seed: int = SEED) -> Dataset:
         specialty_id = group_by_id[student.group_id].specialty_id
         specialty_courses = courses_by_specialty[specialty_id]
 
-        mandatory = [course for course in specialty_courses if not course.is_elective]
-        electives = [course for course in specialty_courses if course.is_elective]
-        chosen = rnd.sample(
-            electives,
-            k=min(rnd.randint(*ELECTIVES_CHOSEN_BY_STUDENT), len(electives)),
-        )
-
         selected = set()
-        for course in (*mandatory, *chosen):
+        for course in specialty_courses:
             data.student_courses.append(
                 StudentCourse(
                     id=uuid4(),
                     student_id=student.id,
                     course_id=course.id,
-                    is_elective=course.is_elective,
                     enrolled_at=date(student.enrollment_date.year, 9, 1),
                 )
             )
@@ -385,8 +444,7 @@ def generate(seed: int = SEED) -> Dataset:
     for item in data.schedule:
         course_id = lecture_by_id[item.lecture_id].course_id
         for student in students_by_group[item.group_id]:
-            # Отметка ставится только тем, кто записан на курс: выборные
-            # слушают не все, и именно это делает лабы №2 и №3 осмысленными.
+            # Отметка ставится только записанным на курс.
             if course_id not in student_course_ids[student.id]:
                 continue
             present = rnd.random() < student.diligence
@@ -397,6 +455,8 @@ def generate(seed: int = SEED) -> Dataset:
                     schedule_id=item.id,
                     student_id=student.id,
                     is_present=present,
+                    # Отметку ставит тот, кто вёл занятие.
+                    marked_by=item.teacher_name,
                     note=None if present else rnd.choice(("болезнь", "по заявлению", None)),
                 )
             )

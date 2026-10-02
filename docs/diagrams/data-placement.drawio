@@ -1,0 +1,83 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Размещение данных по хранилищам" id="data-placement">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="gen" value="&lt;b&gt;Генератор&lt;/b&gt;&lt;br&gt;один Dataset в памяти, общие UUID" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="600" y="30" width="300" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pg" value="&lt;b&gt;PostgreSQL&lt;/b&gt; — источник истины · ACID · партиционирование" style="swimlane;html=1;startSize=32;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="200" y="130" width="1100" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="pg1" value="&lt;b&gt;Организация&lt;/b&gt;&lt;br&gt;university · institute&lt;br&gt;department · specialty&lt;br&gt;department_specialties" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="pg">
+          <mxGeometry x="20" y="45" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="pg2" value="&lt;b&gt;Учебный план&lt;/b&gt;&lt;br&gt;lecture_course&lt;br&gt;lecture&lt;br&gt;lecture_material" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="pg">
+          <mxGeometry x="290" y="45" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="pg3" value="&lt;b&gt;Студенты&lt;/b&gt;&lt;br&gt;student_group&lt;br&gt;student" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="pg">
+          <mxGeometry x="560" y="45" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="pg4" value="&lt;b&gt;Расписание и посещаемость&lt;/b&gt;&lt;br&gt;schedule&lt;br&gt;attendance — is_present,&lt;br&gt;44 недельные партиции" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="pg">
+          <mxGeometry x="830" y="45" width="250" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rd" value="&lt;b&gt;Redis&lt;/b&gt; — ключ-значение&lt;br&gt;&lt;br&gt;student:{зачётка} → HASH, карточка&lt;br&gt;student:id:{uuid} → вторичный индекс&lt;br&gt;students → SET всех номеров" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="400" width="300" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="mg" value="&lt;b&gt;MongoDB&lt;/b&gt; — документ-композиция&lt;br&gt;&lt;br&gt;groups — группа + студенты + курсы&lt;br&gt;courses — курс + лекции + часы" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="380" y="400" width="300" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="n4" value="&lt;b&gt;Neo4j&lt;/b&gt; — типизированные связи&lt;br&gt;&lt;br&gt;Specialty →HAS_GROUP→ Group&lt;br&gt;Group →HAS_STUDENT→ Student&lt;br&gt;Specialty →OFFERS→ Course&lt;br&gt;Student →ENROLLED→ Course" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="720" y="400" width="300" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="es" value="&lt;b&gt;Elasticsearch&lt;/b&gt; — полнотекст с метаданными&lt;br&gt;&lt;br&gt;lectures — annotation + content_text,&lt;br&gt;анализатор russian&lt;br&gt;courses — description&lt;br&gt;фильтры: lecture_type, tags, computer_type" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="400" width="300" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="lab" value="&lt;b&gt;Лаборатоная работа №1&lt;/b&gt;&lt;br&gt;отчёт о 10 студентах с минимальным&lt;br&gt;процентом посещения лекций" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="620" y="620" width="340" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeWidth=2;strokeColor=#666666;endArrow=block;" edge="1" parent="1" source="gen" target="pg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="загрузка проекций" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;endArrow=block;fontSize=10;" edge="1" parent="1" source="pg" target="rd">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;endArrow=block;" edge="1" parent="1" source="pg" target="mg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;endArrow=block;" edge="1" parent="1" source="pg" target="n4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;endArrow=block;" edge="1" parent="1" source="pg" target="es">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s1" value="1 · термин или фраза" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeWidth=2;strokeColor=#9673a6;endArrow=block;fontSize=10;fontColor=#9673a6;" edge="1" parent="1" source="lab" target="es">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="2 · id лекций и курсов" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeWidth=2;strokeColor=#6c8ebf;endArrow=block;fontSize=10;fontColor=#6c8ebf;" edge="1" parent="1" source="es" target="n4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="3 · пары студент-курс" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeWidth=2;strokeColor=#82b366;endArrow=block;fontSize=10;fontColor=#82b366;" edge="1" parent="1" source="n4" target="pg4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s4" value="4 · id студентов и проценты" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeWidth=2;strokeColor=#b85450;endArrow=block;fontSize=10;fontColor=#b85450;" edge="1" parent="1" source="pg4" target="rd">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="s5" value="5 · карточки студентов" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeWidth=2;strokeColor=#b85450;endArrow=block;fontSize=10;fontColor=#b85450;" edge="1" parent="1" source="rd" target="lab">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="note" value="Факты посещения (is_present) живут только в PostgreSQL: их десятки тысяч и они растут каждую неделю.&#10;MongoDB в лабе №1 не участвует — её очередь в лабах №2 и №3." style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="720" width="900" height="50" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

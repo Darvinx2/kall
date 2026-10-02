@@ -1,4 +1,4 @@
-"""Отчёт лабы №1: одна функция, три хранилища подряд.
+"""Отчёт лабы №1: одна функция, четыре хранилища подряд.
 
 Задание: «извлечь отчёт о 10 студентах с минимальным процентом посещения
 лекций, содержащих заданный термин или фразу, за определённый период
@@ -10,23 +10,33 @@
 1. Elasticsearch — по термину отдаёт id лекций и id курсов, которым они
    принадлежат. Обратный индекс с анализатором russian находит любую
    словоформу; в PostgreSQL тот же поиск был бы перебором по ILIKE без
-   индекса.
+   индекса. Термин ищется в аннотации и в склеенных текстах материалов
+   занятия. Фильтр по lecture_type оставляет только лекции: практики
+   и лабораторные в процент посещения лекций не входят.
 2. Neo4j — по id курсов отдаёт ПАРЫ (студент, курс), а не плоский список
-   студентов (обход связи ENROLLED). Пара обязательна: среди отобранных
-   курсов есть и выборные, и если просто собрать множество студентов,
-   отчёт спутает разные курсы одного студента — тот, кто записан на один
-   из совпавших курсов, получит в план ещё и занятия другого совпавшего
-   курса, на который не записывался. Пара (student_id, course_id)
-   держит эту связь явной вплоть до SQL.
+   студентов (обход связи ENROLLED). Пара обязательна: если собрать только
+   множество студентов, отчёт спутает разные курсы одного студента — тот,
+   кто записан на один из совпавших курсов, получит в план ещё и занятия
+   другого совпавшего курса. Пара (student_id, course_id) держит эту связь
+   явной вплоть до SQL.
 3. PostgreSQL — считает посещаемость по занятиям с отобранными лекциями
    за период, но только по парам (студент, курс) из шага 2 — join идёт
    именно по паре, не по двум независимым спискам. Знаменатель — сами
    занятия из schedule (LEFT JOIN к attendance): если отметки нет, это
    пропуск, а не повод исключить занятие из отчёта. Фильтр по
    week_start_date идёт по ключу партиционирования, поэтому читаются
-   только недели из запрошенного диапазона. Карточка студента (ФИО,
-   зачётка, группа, специальность) джойнится тут же, к student/
-   student_group/specialty — отдельного похода в Redis не нужно.
+   только недели из запрошенного диапазона, а по scheduled_date —
+   чтобы в знаменатель не попали занятия той же недели, но вне периода.
+   Запрос чисто аналитический:
+   возвращает идентификаторы и числа, полей карточки в нём нет.
+4. Redis — по десяти идентификаторам отдаёт карточки студентов. Первичный
+   ключ там — номер зачётной книжки (task.md), а аналитика оперирует UUID,
+   поэтому сначала MGET по вторичному индексу student:id:{uuid}, затем
+   пайплайн HGETALL. Два round-trip на весь отчёт вместо десяти.
+
+   Redis здесь не источник истины, а витрина ключ-значение: при промахе
+   (ключи вычистили, витрина отстала) карточка дочитывается из PostgreSQL,
+   поэтому отчёт не ломается никогда.
 """
 
 from datetime import date, timedelta
@@ -34,10 +44,35 @@ from datetime import date, timedelta
 from elasticsearch import AsyncElasticsearch
 from neo4j import AsyncDriver
 from psycopg_pool import AsyncConnectionPool
+from redis.asyncio import Redis
 
 __all__ = ("build_report",)
 
 LECTURES_INDEX = "lectures"
+
+# Задание: «процент посещения ЛЕКЦИЙ». Практики и лабораторные входят
+# в состав курса, но в знаменатель процента не попадают.
+LESSON_TYPE = "лекция"
+
+# Раскладка ключей повторяет generator/app/db/redis.py.
+STUDENT_KEY = "student:{card}"
+STUDENT_BY_ID_KEY = "student:id:{student_id}"
+
+# Поля карточки, которые ожидает StudentInfo. Один список на оба источника:
+# и на HASH из Redis, и на запрос отката в PostgreSQL.
+CARD_FIELDS = (
+    "card_number",
+    "last_name",
+    "first_name",
+    "patronymic",
+    "email",
+    "phone",
+    "status",
+    "enrollment_date",
+    "group_name",
+    "specialty_name",
+    "specialty_code",
+)
 
 ELIGIBLE_PAIRS_CYPHER = """
     MATCH (st:Student)-[:ENROLLED]->(c:Course)
@@ -56,39 +91,49 @@ ATTENDANCE_SQL = """
                  AS e(student_id, course_id)
     )
     SELECT st.id::text              AS student_id,
-           st.student_card_number   AS card_number,
-           st.last_name             AS last_name,
-           st.first_name            AS first_name,
-           st.patronymic            AS patronymic,
-           st.email                 AS email,
-           st.phone                 AS phone,
-           st.status                AS status,
-           st.enrollment_date       AS enrollment_date,
-           sg.name                  AS group_name,
-           sp.name                  AS specialty_name,
-           sp.code                  AS specialty_code,
            count(*)                 AS lectures_planned,
            sum(coalesce(a.is_present::int, 0)) AS lectures_attended
     FROM schedule sch
     JOIN lecture l ON l.id = sch.lecture_id
     JOIN student st ON st.group_id = sch.group_id
-    JOIN student_group sg ON sg.id = st.group_id
-    JOIN specialty sp ON sp.id = sg.specialty_id
     JOIN eligible e ON e.student_id = st.id AND e.course_id = l.course_id
     LEFT JOIN attendance a
            ON a.schedule_id = sch.id
           AND a.student_id = st.id
           AND a.week_start_date >= %(week_from)s
-          AND a.week_start_date <= %(week_to)s
+          AND a.week_start_date <= %(period_to)s
     WHERE sch.lecture_id = ANY(%(lecture_ids)s::uuid[])
+      -- Две границы на разных колонках делают разную работу. По неделе —
+      -- чтобы PostgreSQL отсёк лишние партиции и не читал весь год.
       AND sch.week_start_date >= %(week_from)s
-      AND sch.week_start_date <= %(week_to)s
-    -- Группировка по первичным ключам student/student_group/specialty:
-    -- Postgres выводит функциональную зависимость остальных их колонок
-    -- и не требует перечислять каждую в GROUP BY.
-    GROUP BY st.id, sg.id, sp.id
+      AND sch.week_start_date <= %(period_to)s
+      -- По дате занятия — чтобы в знаменатель не попали занятия той же
+      -- недели, но вне запрошенного периода: период редко начинается
+      -- в понедельник и заканчивается в воскресенье.
+      AND sch.scheduled_date BETWEEN %(period_from)s AND %(period_to)s
+    GROUP BY st.id
     ORDER BY sum(coalesce(a.is_present::int, 0))::numeric / count(*) ASC, st.id
     LIMIT %(limit)s
+"""
+
+# Откат на случай промаха витрины: ровно те же поля, что лежат в HASH.
+CARDS_FALLBACK_SQL = """
+    SELECT st.id::text            AS student_id,
+           st.student_card_number AS card_number,
+           st.last_name,
+           st.first_name,
+           st.patronymic,
+           st.email,
+           st.phone,
+           st.status,
+           st.enrollment_date,
+           sg.name                AS group_name,
+           sp.name                AS specialty_name,
+           sp.code                AS specialty_code
+    FROM student st
+    JOIN student_group sg ON sg.id = st.group_id
+    JOIN specialty sp ON sp.id = sg.specialty_id
+    WHERE st.id = ANY(%(student_ids)s::uuid[])
 """
 
 
@@ -97,16 +142,34 @@ async def build_report(
     elastic: AsyncElasticsearch,
     neo4j_driver: AsyncDriver,
     pg_pool: AsyncConnectionPool,
+    redis_client: Redis,
     term: str,
     period_from: date,
     period_to: date,
     limit: int,
 ) -> dict:
     # 1. Elasticsearch: термин -> лекции и курсы, которым они принадлежат.
-    # match_phrase, а не match: задание про термин ИЛИ ФРАЗУ
+    # filter, а не must: тип занятия — точное совпадение, релевантность
+    # ему не нужна, и Elasticsearch кэширует такой фильтр.
     search = await elastic.search(
         index=LECTURES_INDEX,
-        query={"match_phrase": {"annotation": term}},
+        query={
+            "bool": {
+                # type: phrase — задание про «термин ИЛИ ФРАЗУ»; multi_match
+                # ищет её сразу в аннотации и в склеенных текстах материалов.
+                # Аннотация весомее: она описывает занятие целиком.
+                "must": [
+                    {
+                        "multi_match": {
+                            "query": term,
+                            "type": "phrase",
+                            "fields": ["annotation^2", "content_text"],
+                        }
+                    }
+                ],
+                "filter": [{"term": {"lecture_type": LESSON_TYPE}}],
+            }
+        },
         size=1000,
         source_includes=["lecture_id", "course_id", "course_name"],
     )
@@ -118,10 +181,8 @@ async def build_report(
     if not lecture_ids:
         return _empty_report(term, period_from, period_to)
 
-    # 2. Neo4j: курсы -> пары (студент, курс), на который он реально
-    # записан. Среди отобранных курсов могут быть выборные — обход
-    # ENROLLED отсекает тех, кто конкретный курс не выбирал, и не путает
-    # его с другим совпавшим курсом того же студента.
+    # 2. Neo4j: курсы -> пары (студент, курс), на который он записан.
+    # Обход ENROLLED не путает разные совпавшие курсы одного студента.
     async with neo4j_driver.session() as session:
         result = await session.run(ELIGIBLE_PAIRS_CYPHER, course_ids=course_ids)
         pairs = [(record["student_id"], record["course_id"]) async for record in result]
@@ -130,9 +191,9 @@ async def build_report(
         return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
 
     # 3. PostgreSQL: посещаемость за период по отобранным лекциям,
-    # только по парам (студент, курс) из шага 2. Ключ партиционирования —
-    # начало недели, сдвигаем левую границу на понедельник, иначе первая
-    # неделя периода отсечётся.
+    # только по парам (студент, курс) из шага 2. Левую границу недели
+    # сдвигаем на понедельник, иначе партиция первой недели периода
+    # отсеклась бы целиком вместе с нужными занятиями.
     week_from = period_from - timedelta(days=period_from.weekday())
     async with pg_pool.connection() as conn:
         cursor = await conn.execute(
@@ -142,52 +203,29 @@ async def build_report(
                 "student_ids": [pair[0] for pair in pairs],
                 "course_ids": [pair[1] for pair in pairs],
                 "week_from": week_from,
-                "week_to": period_to,
+                "period_from": period_from,
+                "period_to": period_to,
                 "limit": limit,
             },
         )
-        rows = await cursor.fetchall()
+        stats = await cursor.fetchall()
 
-    if not rows:
+    if not stats:
         return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
 
-    items = []
-    for (
-        student_id,
-        card_number,
-        last_name,
-        first_name,
-        patronymic,
-        email,
-        phone,
-        status,
-        enrollment_date,
-        group_name,
-        specialty_name,
-        specialty_code,
-        planned,
-        attended,
-    ) in rows:
-        items.append(
-            {
-                "student": {
-                    "card_number": card_number,
-                    "last_name": last_name,
-                    "first_name": first_name,
-                    "patronymic": patronymic,
-                    "email": email,
-                    "phone": phone,
-                    "status": status,
-                    "enrollment_date": enrollment_date.isoformat(),
-                    "group_name": group_name,
-                    "specialty_name": specialty_name,
-                    "specialty_code": specialty_code,
-                },
-                "attendance_percent": round(100 * attended / planned, 1) if planned else 0.0,
-                "lectures_planned": planned,
-                "lectures_attended": attended,
-            }
-        )
+    # 4. Redis: карточки отобранных студентов из витрины ключ-значение.
+    cards = await _load_cards(redis_client, pg_pool, [row[0] for row in stats])
+
+    items = [
+        {
+            "student": cards[student_id],
+            "attendance_percent": round(100 * attended / planned, 1) if planned else 0.0,
+            "lectures_planned": planned,
+            "lectures_attended": attended,
+        }
+        for student_id, planned, attended in stats
+        if student_id in cards
+    ]
 
     return {
         "term": term,
@@ -197,6 +235,54 @@ async def build_report(
         "matched_courses": matched_courses,
         "items": items,
     }
+
+
+async def _load_cards(
+    redis_client: Redis, pg_pool: AsyncConnectionPool, student_ids: list[str]
+) -> dict[str, dict]:
+    """Карточки студентов: сначала витрина, при промахе — источник истины.
+
+    Два round-trip в Redis на весь отчёт: MGET переводит UUID в номера
+    зачёток через вторичный индекс, затем пайплайн HGETALL забирает сами
+    карточки. Поштучных обращений нет.
+    """
+    numbers = await redis_client.mget(
+        [STUDENT_BY_ID_KEY.format(student_id=student_id) for student_id in student_ids]
+    )
+    known = [(sid, card) for sid, card in zip(student_ids, numbers) if card]
+
+    hashes = []
+    if known:
+        pipe = redis_client.pipeline(transaction=False)
+        for _student_id, card in known:
+            pipe.hgetall(STUDENT_KEY.format(card=card))
+        hashes = await pipe.execute()
+
+    cards: dict[str, dict] = {}
+    for (student_id, _card), payload in zip(known, hashes):
+        if payload:
+            cards[student_id] = {field: payload.get(field, "") for field in CARD_FIELDS}
+
+    missing = [student_id for student_id in student_ids if student_id not in cards]
+    if missing:
+        cards.update(await _load_cards_from_postgres(pg_pool, missing))
+    return cards
+
+
+async def _load_cards_from_postgres(
+    pg_pool: AsyncConnectionPool, student_ids: list[str]
+) -> dict[str, dict]:
+    """Откат: витрина отстала или её вычистили — читаем источник истины."""
+    async with pg_pool.connection() as conn:
+        cursor = await conn.execute(CARDS_FALLBACK_SQL, {"student_ids": student_ids})
+        rows = await cursor.fetchall()
+
+    cards = {}
+    for student_id, *values in rows:
+        card = dict(zip(CARD_FIELDS, values))
+        card["enrollment_date"] = card["enrollment_date"].isoformat()
+        cards[student_id] = card
+    return cards
 
 
 def _empty_report(
