@@ -82,6 +82,5 @@ class ReportPeriod(BaseModel):
 class ReportResponse(BaseModel):
     term: str
     period: ReportPeriod
-    matched_lectures_count: int
     matched_courses: list[str]
     items: list[ReportItemResponse]

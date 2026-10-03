@@ -39,7 +39,6 @@ async def report(request: Request, body: ReportRequest) -> ReportResponse:
     return ReportResponse(
         term=data["term"],
         period=ReportPeriod(date_from=data["period_from"], date_to=data["period_to"]),
-        matched_lectures_count=data["matched_lectures_count"],
         matched_courses=data["matched_courses"],
         items=[
             ReportItemResponse(

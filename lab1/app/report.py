@@ -55,10 +55,6 @@ LECTURES_INDEX = "lectures"
 # в состав курса, но в знаменатель процента не попадают.
 LESSON_TYPE = "лекция"
 
-# В знаменатель идут только состоявшиеся занятия: отменённую пару
-# нельзя засчитать студенту как пропуск.
-LESSON_STATUS = "held"
-
 # Раскладка ключей повторяет generator/app/db/redis.py.
 STUDENT_KEY = "student:{card}"
 STUDENT_BY_ID_KEY = "student:id:{student_id}"
@@ -92,8 +88,7 @@ STUDENTS_CYPHER = """
 # значит пропуск. Фильтр по студентам и по лекциям независимый — выборных
 # курсов в модели нет, каждый студент специальности слушает все её курсы.
 #   week_start_date >= week_from   отсекает лишние партиции attendance;
-#   scheduled_date BETWEEN ...     задаёт точные границы периода;
-#   status = held                  отменённые занятия в расчёт не идут.
+#   scheduled_date BETWEEN ...     задаёт точные границы периода.
 ATTENDANCE_SQL = """
     SELECT st.id::text                             AS student_id,
            count(*)                                AS lectures_planned,
@@ -105,7 +100,6 @@ ATTENDANCE_SQL = """
       AND st.id = ANY(%(student_ids)s::uuid[])
       AND s.week_start_date >= %(week_from)s
       AND s.scheduled_date BETWEEN %(period_from)s AND %(period_to)s
-      AND s.status = %(lesson_status)s
     GROUP BY st.id
 """
 
@@ -143,6 +137,8 @@ async def build_report(
 ) -> dict:
     # 1. Elasticsearch: термин -> лекции и курсы, которым они принадлежат.
     # filter, а не must: тип занятия — точное совпадение
+    # Термин или фраза в содержании лекции: аннотация и склеенные тексты
+    # материалов. Фильтр по типу занятия — задание про посещение «лекций».
     search = await elastic.search(
         index=LECTURES_INDEX,
         query={
@@ -152,7 +148,7 @@ async def build_report(
                         "multi_match": {
                             "query": term,
                             "type": "phrase",
-                            "fields": ["title^3", "annotation^2", "content_text"],
+                            "fields": ["annotation", "content_text"],
                         }
                     }
                 ],
@@ -176,7 +172,7 @@ async def build_report(
         student_ids = [record["student_id"] async for record in result]
 
     if not student_ids:
-        return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
+        return _empty_report(term, period_from, period_to, matched_courses)
 
     # 3. PostgreSQL: посещаемость за период по отобранным лекциям
     # и студентам. Левую границу недели сдвигаем на понедельник, иначе
@@ -191,13 +187,11 @@ async def build_report(
                 "week_from": week_from,
                 "period_from": period_from,
                 "period_to": period_to,
-                "lesson_status": LESSON_STATUS,
             },
         )
         stats = await cursor.fetchall()
 
-    # Процент, сортировку и отбор десяти худших делаем в Python — так
-    # SQL остаётся простым, а правило «минимальный процент» видно явно.
+    # Процент, сортировку и отбор худших делаем в Python
     ranked = sorted(
         (
             {
@@ -213,7 +207,7 @@ async def build_report(
     )[:limit]
 
     if not ranked:
-        return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
+        return _empty_report(term, period_from, period_to, matched_courses)
 
     # 4. Redis: карточки отобранных студентов из витрины ключ-значение.
     cards = await _load_cards(redis_client, pg_pool, [row["student_id"] for row in ranked])
@@ -233,7 +227,6 @@ async def build_report(
         "term": term,
         "period_from": period_from,
         "period_to": period_to,
-        "matched_lectures_count": len(lecture_ids),
         "matched_courses": matched_courses,
         "items": items,
     }
@@ -292,13 +285,11 @@ def _empty_report(
     period_from: date,
     period_to: date,
     matched_courses: list[str] | None = None,
-    matched_lectures_count: int = 0,
 ) -> dict:
     return {
         "term": term,
         "period_from": period_from,
         "period_to": period_to,
-        "matched_lectures_count": matched_lectures_count,
         "matched_courses": matched_courses or [],
         "items": [],
     }
