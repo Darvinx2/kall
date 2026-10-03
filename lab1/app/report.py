@@ -10,9 +10,9 @@
 1. Elasticsearch — по термину отдаёт id лекций и id курсов, которым они
    принадлежат. Обратный индекс с анализатором russian находит любую
    словоформу; в PostgreSQL тот же поиск был бы перебором по ILIKE без
-   индекса. Термин ищется в аннотации и в склеенных текстах материалов
-   занятия. Фильтр по lecture_type оставляет только лекции: практики
-   и лабораторные в процент посещения лекций не входят.
+   индекса. Термин ищется в названии, аннотации и склеенных текстах
+   материалов занятия. Фильтр по lecture_type оставляет только лекции:
+   практики и лабораторные в процент посещения лекций не входят.
 2. Neo4j — по id курсов отдаёт ПАРЫ (студент, курс), а не плоский список
    студентов (обход связи ENROLLED). Пара обязательна: если собрать только
    множество студентов, отчёт спутает разные курсы одного студента — тот,
@@ -27,7 +27,8 @@
    week_start_date идёт по ключу партиционирования, поэтому читаются
    только недели из запрошенного диапазона, а по scheduled_date —
    чтобы в знаменатель не попали занятия той же недели, но вне периода.
-   Запрос чисто аналитический:
+   В знаменатель идут только состоявшиеся занятия. Запрос чисто
+   аналитический:
    возвращает идентификаторы и числа, полей карточки в нём нет.
 4. Redis — по десяти идентификаторам отдаёт карточки студентов. Первичный
    ключ там — номер зачётной книжки (task.md), а аналитика оперирует UUID,
@@ -53,6 +54,10 @@ LECTURES_INDEX = "lectures"
 # Задание: «процент посещения ЛЕКЦИЙ». Практики и лабораторные входят
 # в состав курса, но в знаменатель процента не попадают.
 LESSON_TYPE = "лекция"
+
+# В знаменатель идут только состоявшиеся занятия: отменённую пару
+# нельзя засчитать студенту как пропуск.
+LESSON_STATUS = "held"
 
 # Раскладка ключей повторяет generator/app/db/redis.py.
 STUDENT_KEY = "student:{card}"
@@ -86,33 +91,39 @@ ELIGIBLE_PAIRS_CYPHER = """
 # независимым спискам — иначе студент, записанный на один из совпавших
 # курсов, получил бы в план и занятия другого совпавшего курса.
 ATTENDANCE_SQL = """
-    WITH eligible AS (
-        SELECT * FROM unnest(%(student_ids)s::uuid[], %(course_ids)s::uuid[])
-                 AS e(student_id, course_id)
-    )
-    SELECT st.id::text              AS student_id,
-           count(*)                 AS lectures_planned,
-           sum(coalesce(a.is_present::int, 0)) AS lectures_attended
+    SELECT st.id::text                          AS student_id,
+           count(*)                             AS lectures_planned,
+           count(*) FILTER (WHERE a.is_present) AS lectures_attended,
+           round(100.0 * count(*) FILTER (WHERE a.is_present) / count(*), 1)
+                                                AS attendance_percent
     FROM schedule sch
-    JOIN lecture l ON l.id = sch.lecture_id
+    -- Пары (лекция, курс) пришли из Elasticsearch, поэтому course_id
+    -- известен заранее и таблица lecture в запросе не нужна.
+    JOIN unnest(%(lecture_ids)s::uuid[], %(lecture_course_ids)s::uuid[])
+         AS m(lecture_id, course_id)
+      ON m.lecture_id = sch.lecture_id
     JOIN student st ON st.group_id = sch.group_id
-    JOIN eligible e ON e.student_id = st.id AND e.course_id = l.course_id
+    -- Пары (студент, курс) из Neo4j: join идёт по паре, а не по двум
+    -- независимым спискам — иначе студент, записанный на один из
+    -- совпавших курсов, получил бы в план занятия другого.
+    JOIN unnest(%(student_ids)s::uuid[], %(course_ids)s::uuid[])
+         AS e(student_id, course_id)
+      ON e.student_id = st.id AND e.course_id = m.course_id
     LEFT JOIN attendance a
            ON a.schedule_id = sch.id
           AND a.student_id = st.id
           AND a.week_start_date >= %(week_from)s
           AND a.week_start_date <= %(period_to)s
-    WHERE sch.lecture_id = ANY(%(lecture_ids)s::uuid[])
-      -- Две границы на разных колонках делают разную работу. По неделе —
-      -- чтобы PostgreSQL отсёк лишние партиции и не читал весь год.
-      AND sch.week_start_date >= %(week_from)s
+    -- Две границы на разных колонках делают разную работу. По неделе —
+    -- чтобы PostgreSQL отсёк лишние партиции и не читал весь год.
+    -- По дате занятия — чтобы в знаменатель не попали занятия той же
+    -- недели, но вне запрошенного периода.
+    WHERE sch.week_start_date >= %(week_from)s
       AND sch.week_start_date <= %(period_to)s
-      -- По дате занятия — чтобы в знаменатель не попали занятия той же
-      -- недели, но вне запрошенного периода: период редко начинается
-      -- в понедельник и заканчивается в воскресенье.
       AND sch.scheduled_date BETWEEN %(period_from)s AND %(period_to)s
+      AND sch.status = %(lesson_status)s
     GROUP BY st.id
-    ORDER BY sum(coalesce(a.is_present::int, 0))::numeric / count(*) ASC, st.id
+    ORDER BY attendance_percent ASC, st.id
     LIMIT %(limit)s
 """
 
@@ -163,7 +174,9 @@ async def build_report(
                         "multi_match": {
                             "query": term,
                             "type": "phrase",
-                            "fields": ["annotation^2", "content_text"],
+                            # Название весомее всего: термин в заголовке
+                            # лекции точнее, чем он же в теле материала.
+                            "fields": ["title^3", "annotation^2", "content_text"],
                         }
                     }
                 ],
@@ -174,8 +187,10 @@ async def build_report(
         source_includes=["lecture_id", "course_id", "course_name"],
     )
     hits = search["hits"]["hits"]
+    # Два параллельных массива — пары (лекция, курс) для unnest в SQL.
     lecture_ids = [hit["_source"]["lecture_id"] for hit in hits]
-    course_ids = sorted({hit["_source"]["course_id"] for hit in hits})
+    lecture_course_ids = [hit["_source"]["course_id"] for hit in hits]
+    course_ids = sorted(set(lecture_course_ids))
     matched_courses = sorted({hit["_source"]["course_name"] for hit in hits})
 
     if not lecture_ids:
@@ -200,11 +215,13 @@ async def build_report(
             ATTENDANCE_SQL,
             {
                 "lecture_ids": lecture_ids,
+                "lecture_course_ids": lecture_course_ids,
                 "student_ids": [pair[0] for pair in pairs],
                 "course_ids": [pair[1] for pair in pairs],
                 "week_from": week_from,
                 "period_from": period_from,
                 "period_to": period_to,
+                "lesson_status": LESSON_STATUS,
                 "limit": limit,
             },
         )
@@ -219,11 +236,11 @@ async def build_report(
     items = [
         {
             "student": cards[student_id],
-            "attendance_percent": round(100 * attended / planned, 1) if planned else 0.0,
+            "attendance_percent": float(percent),
             "lectures_planned": planned,
             "lectures_attended": attended,
         }
-        for student_id, planned, attended in stats
+        for student_id, planned, attended, percent in stats
         if student_id in cards
     ]
 
