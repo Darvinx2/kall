@@ -32,12 +32,7 @@ async def healthcheck() -> HealthResponse:
 
 @router.post("/auth/login", tags=["Auth"])
 def login(form_data: LoginForm, settings: SettingsDep) -> TokenResponse:
-    """Выдаёт access-токен по паре логин/пароль.
-
-    Объявлена как `def`, а не `async def`: проверка пароля Argon2 занимает
-    ~40 мс чистого процессорного времени и заблокировала бы событийный цикл.
-    FastAPI выполняет синхронные обработчики в пуле потоков.
-    """
+    """Выдаёт access-токен по паре логин/пароль."""
     user = authenticate_user(form_data.username, form_data.password)
     if user is None:
         raise HTTPException(

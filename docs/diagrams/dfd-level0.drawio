@@ -1,0 +1,41 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="DFD Level 0" id="dfd-l0">
+    <mxGraphModel dx="1000" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="500" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Контекстная диаграмма потоков данных (DFD Level 0), нотация Йордана — Коуда" style="text;html=1;align=left;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="24" width="760" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- Внешняя сущность -->
+        <mxCell id="user" value="&lt;b&gt;Пользователь&lt;/b&gt;&lt;br&gt;аналитик кафедры" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="60" y="210" width="150" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Процесс: вся система одним кругом -->
+        <mxCell id="proc" value="&lt;b&gt;0&lt;/b&gt;&lt;br&gt;&lt;br&gt;Система отчётов&lt;br&gt;по учебному процессу:&lt;br&gt;вузы, курсы, группы,&lt;br&gt;студенты, посещаемость" style="ellipse;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=3;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="470" y="180" width="230" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Блок хранилищ -->
+        <mxCell id="stores" value="&lt;b&gt;D1 – D5&lt;/b&gt;&lt;br&gt;Хранилища данных:&lt;br&gt;PostgreSQL, Redis, MongoDB,&lt;br&gt;Neo4j, Elasticsearch" style="shape=partialRectangle;whiteSpace=wrap;html=1;left=0;right=0;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="950" y="200" width="200" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Потоки пользователь ↔ система -->
+        <mxCell id="f1" value="F1: логин/пароль,&#10;параметры отчёта + JWT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=12;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="user" target="proc"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f2" value="F2: JWT-токен,&#10;JSON-отчёт" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=12;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="proc" target="user"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Потоки система ↔ хранилища -->
+        <mxCell id="f3" value="F3: запрос данных" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=12;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="proc" target="stores"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f4" value="F4: данные" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=12;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="stores" target="proc"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="lg" value="◯ процесс (вся система)      ▭ внешняя сущность      ⊏⊐ хранилище данных      → поток данных" style="text;html=1;align=left;fontSize=11;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="380" width="900" height="24" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

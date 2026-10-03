@@ -160,22 +160,16 @@ async def build_report(
     limit: int,
 ) -> dict:
     # 1. Elasticsearch: термин -> лекции и курсы, которым они принадлежат.
-    # filter, а не must: тип занятия — точное совпадение, релевантность
-    # ему не нужна, и Elasticsearch кэширует такой фильтр.
+    # filter, а не must: тип занятия — точное совпадение
     search = await elastic.search(
         index=LECTURES_INDEX,
         query={
             "bool": {
-                # type: phrase — задание про «термин ИЛИ ФРАЗУ»; multi_match
-                # ищет её сразу в аннотации и в склеенных текстах материалов.
-                # Аннотация весомее: она описывает занятие целиком.
                 "must": [
                     {
                         "multi_match": {
                             "query": term,
                             "type": "phrase",
-                            # Название весомее всего: термин в заголовке
-                            # лекции точнее, чем он же в теле материала.
                             "fields": ["title^3", "annotation^2", "content_text"],
                         }
                     }
