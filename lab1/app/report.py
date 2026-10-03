@@ -79,52 +79,34 @@ CARD_FIELDS = (
     "specialty_code",
 )
 
-ELIGIBLE_PAIRS_CYPHER = """
+# Студенты, записанные на отобранные курсы (курсы пришли из шага 1).
+STUDENTS_CYPHER = """
     MATCH (st:Student)-[:ENROLLED]->(c:Course)
     WHERE c.id IN $course_ids
-    RETURN st.id AS student_id, c.id AS course_id
+    RETURN DISTINCT st.id AS student_id
 """
 
-# eligible — пары (студент, курс) из Neo4j как таблица: unnest двух
-# параллельных массивов zip'ует их по позиции. Дальше join идёт по паре
-# (e.student_id, e.course_id) = (st.id, l.course_id), а не по двум
-# независимым спискам — иначе студент, записанный на один из совпавших
-# курсов, получил бы в план и занятия другого совпавшего курса.
+# Посещаемость по отобранным лекциям за период, по одной строке на студента.
+#
+# Знаменатель — занятия из расписания (LEFT JOIN к attendance): нет отметки,
+# значит пропуск. Фильтр по студентам и по лекциям независимый — выборных
+# курсов в модели нет, каждый студент специальности слушает все её курсы.
+#   week_start_date >= week_from   отсекает лишние партиции attendance;
+#   scheduled_date BETWEEN ...     задаёт точные границы периода;
+#   status = held                  отменённые занятия в расчёт не идут.
 ATTENDANCE_SQL = """
-    SELECT st.id::text                          AS student_id,
-           count(*)                             AS lectures_planned,
-           count(*) FILTER (WHERE a.is_present) AS lectures_attended,
-           round(100.0 * count(*) FILTER (WHERE a.is_present) / count(*), 1)
-                                                AS attendance_percent
-    FROM schedule sch
-    -- Пары (лекция, курс) пришли из Elasticsearch, поэтому course_id
-    -- известен заранее и таблица lecture в запросе не нужна.
-    JOIN unnest(%(lecture_ids)s::uuid[], %(lecture_course_ids)s::uuid[])
-         AS m(lecture_id, course_id)
-      ON m.lecture_id = sch.lecture_id
-    JOIN student st ON st.group_id = sch.group_id
-    -- Пары (студент, курс) из Neo4j: join идёт по паре, а не по двум
-    -- независимым спискам — иначе студент, записанный на один из
-    -- совпавших курсов, получил бы в план занятия другого.
-    JOIN unnest(%(student_ids)s::uuid[], %(course_ids)s::uuid[])
-         AS e(student_id, course_id)
-      ON e.student_id = st.id AND e.course_id = m.course_id
-    LEFT JOIN attendance a
-           ON a.schedule_id = sch.id
-          AND a.student_id = st.id
-          AND a.week_start_date >= %(week_from)s
-          AND a.week_start_date <= %(period_to)s
-    -- Две границы на разных колонках делают разную работу. По неделе —
-    -- чтобы PostgreSQL отсёк лишние партиции и не читал весь год.
-    -- По дате занятия — чтобы в знаменатель не попали занятия той же
-    -- недели, но вне запрошенного периода.
-    WHERE sch.week_start_date >= %(week_from)s
-      AND sch.week_start_date <= %(period_to)s
-      AND sch.scheduled_date BETWEEN %(period_from)s AND %(period_to)s
-      AND sch.status = %(lesson_status)s
+    SELECT st.id::text                             AS student_id,
+           count(*)                                AS lectures_planned,
+           count(*) FILTER (WHERE a.is_present)    AS lectures_attended
+    FROM schedule s
+    JOIN student st ON st.group_id = s.group_id
+    LEFT JOIN attendance a ON a.schedule_id = s.id AND a.student_id = st.id
+    WHERE s.lecture_id = ANY(%(lecture_ids)s::uuid[])
+      AND st.id = ANY(%(student_ids)s::uuid[])
+      AND s.week_start_date >= %(week_from)s
+      AND s.scheduled_date BETWEEN %(period_from)s AND %(period_to)s
+      AND s.status = %(lesson_status)s
     GROUP BY st.id
-    ORDER BY attendance_percent ASC, st.id
-    LIMIT %(limit)s
 """
 
 # Откат на случай промаха витрины: ровно те же поля, что лежат в HASH.
@@ -181,61 +163,70 @@ async def build_report(
         source_includes=["lecture_id", "course_id", "course_name"],
     )
     hits = search["hits"]["hits"]
-    # Два параллельных массива — пары (лекция, курс) для unnest в SQL.
     lecture_ids = [hit["_source"]["lecture_id"] for hit in hits]
-    lecture_course_ids = [hit["_source"]["course_id"] for hit in hits]
-    course_ids = sorted(set(lecture_course_ids))
+    course_ids = sorted({hit["_source"]["course_id"] for hit in hits})
     matched_courses = sorted({hit["_source"]["course_name"] for hit in hits})
 
     if not lecture_ids:
         return _empty_report(term, period_from, period_to)
 
-    # 2. Neo4j: курсы -> пары (студент, курс), на который он записан.
-    # Обход ENROLLED не путает разные совпавшие курсы одного студента.
+    # 2. Neo4j: по курсам -> студенты, записанные на них.
     async with neo4j_driver.session() as session:
-        result = await session.run(ELIGIBLE_PAIRS_CYPHER, course_ids=course_ids)
-        pairs = [(record["student_id"], record["course_id"]) async for record in result]
+        result = await session.run(STUDENTS_CYPHER, course_ids=course_ids)
+        student_ids = [record["student_id"] async for record in result]
 
-    if not pairs:
+    if not student_ids:
         return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
 
-    # 3. PostgreSQL: посещаемость за период по отобранным лекциям,
-    # только по парам (студент, курс) из шага 2. Левую границу недели
-    # сдвигаем на понедельник, иначе партиция первой недели периода
-    # отсеклась бы целиком вместе с нужными занятиями.
+    # 3. PostgreSQL: посещаемость за период по отобранным лекциям
+    # и студентам. Левую границу недели сдвигаем на понедельник, иначе
+    # партиция первой недели периода отсеклась бы вместе с нужными занятиями.
     week_from = period_from - timedelta(days=period_from.weekday())
     async with pg_pool.connection() as conn:
         cursor = await conn.execute(
             ATTENDANCE_SQL,
             {
                 "lecture_ids": lecture_ids,
-                "lecture_course_ids": lecture_course_ids,
-                "student_ids": [pair[0] for pair in pairs],
-                "course_ids": [pair[1] for pair in pairs],
+                "student_ids": student_ids,
                 "week_from": week_from,
                 "period_from": period_from,
                 "period_to": period_to,
                 "lesson_status": LESSON_STATUS,
-                "limit": limit,
             },
         )
         stats = await cursor.fetchall()
 
-    if not stats:
+    # Процент, сортировку и отбор десяти худших делаем в Python — так
+    # SQL остаётся простым, а правило «минимальный процент» видно явно.
+    ranked = sorted(
+        (
+            {
+                "student_id": student_id,
+                "lectures_planned": planned,
+                "lectures_attended": attended,
+                "attendance_percent": round(100 * attended / planned, 1) if planned else 0.0,
+            }
+            for student_id, planned, attended in stats
+            if planned
+        ),
+        key=lambda row: (row["attendance_percent"], row["student_id"]),
+    )[:limit]
+
+    if not ranked:
         return _empty_report(term, period_from, period_to, matched_courses, len(lecture_ids))
 
     # 4. Redis: карточки отобранных студентов из витрины ключ-значение.
-    cards = await _load_cards(redis_client, pg_pool, [row[0] for row in stats])
+    cards = await _load_cards(redis_client, pg_pool, [row["student_id"] for row in ranked])
 
     items = [
         {
-            "student": cards[student_id],
-            "attendance_percent": float(percent),
-            "lectures_planned": planned,
-            "lectures_attended": attended,
+            "student": cards[row["student_id"]],
+            "attendance_percent": row["attendance_percent"],
+            "lectures_planned": row["lectures_planned"],
+            "lectures_attended": row["lectures_attended"],
         }
-        for student_id, planned, attended, percent in stats
-        if student_id in cards
+        for row in ranked
+        if row["student_id"] in cards
     ]
 
     return {
