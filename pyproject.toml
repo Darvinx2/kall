@@ -7,4 +7,4 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["gateway", "lab1", "generator"]
+members = ["gateway", "lab1", "lab2", "lab3", "generator"]

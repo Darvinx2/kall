@@ -24,7 +24,11 @@
       Container(gateway, "API Gateway", "[Python 3.14 / FastAPI / :8000]", "JWT-аутентификация и проксирование в лабораторные сервисы. Единственный контейнер, опубликованный наружу", $tags="gateway")
 
       ' ===================== ЯРУС 3: сервисы и задачи =====================
-      Container(lab1, "Lab1 Service", "[Python 3.14 / FastAPI]", "Отчёт о 10 студентах с минимальным процентом посещения. Четыре шага: ES -> Neo4j -> PostgreSQL -> Redis. Порт наружу не публикуется", $tags="service")
+      Container(lab1, "Lab1 Service", "[Python 3.14 / FastAPI]", "Отчёт о 10 студентах с минимальным % посещения по термину. ES -> Neo4j -> PostgreSQL -> Redis", $tags="service")
+
+      Container(lab2, "Lab2 Service", "[Python 3.14 / FastAPI]", "Объём аудитории по курсу семестра и тех. средствам. ES -> PostgreSQL -> MongoDB", $tags="service")
+
+      Container(lab3, "Lab3 Service", "[Python 3.14 / FastAPI]", "Часы спец. дисциплин кафедры по группе. Neo4j -> PostgreSQL -> Redis + MongoDB", $tags="service")
 
       Container(generator, "Data Generator", "[Python 3.14 / разовая задача]", "Собирает один Dataset в памяти и наполняет все пять хранилищ общими UUID. Профиль compose seed, отрабатывает один раз", $tags="job")
 
@@ -41,13 +45,27 @@
   }
 
   ' ====================== СВЯЗИ: строго сверху вниз ======================
-  Rel_D(user, gateway, "POST /auth/login, POST /api/lab1/report", "HTTPS + JWT")
-  Rel_D(gateway, lab1, "POST /report, без токена — сеть compose закрыта", "HTTP")
+  Rel_D(user, gateway, "POST /auth/login, POST /api/lab{1,2,3}/report", "HTTPS + JWT")
+  Rel_D(gateway, lab1, "POST /report (без токена)", "HTTP")
+  Rel_D(gateway, lab2, "POST /report", "HTTP")
+  Rel_D(gateway, lab3, "POST /report", "HTTP")
 
-  Rel_D(lab1, es,    "1. Термин -> id лекций и курсов", "elasticsearch[async]")
-  Rel_D(lab1, neo4j, "2. Курсы -> пары (студент, курс)", "neo4j async, Bolt")
-  Rel_D(lab1, pg,    "3. Проценты, pruning партиций", "psycopg async")
-  Rel_D(lab1, redis, "4. Карточки студентов", "redis.asyncio")
+  ' ЛР1: термин -> посещаемость
+  Rel_D(lab1, es,    "термин -> лекции", "elasticsearch[async]")
+  Rel_D(lab1, neo4j, "курсы -> студенты", "neo4j async")
+  Rel_D(lab1, pg,    "проценты посещения", "psycopg async")
+  Rel_D(lab1, redis, "карточки студентов", "redis.asyncio")
+
+  ' ЛР2: аудитория
+  Rel_D(lab2, es,    "тех. средства -> занятия", "elasticsearch[async]")
+  Rel_D(lab2, pg,    "число слушателей", "psycopg async")
+  Rel_D(lab2, mongo, "полная инфо о курсе", "motor")
+
+  ' ЛР3: часы спец. дисциплин
+  Rel_D(lab3, neo4j, "курсы группы", "neo4j async")
+  Rel_D(lab3, pg,    "часы план/факт", "psycopg async")
+  Rel_D(lab3, redis, "карточки студентов", "redis.asyncio")
+  Rel_D(lab3, mongo, "полная инфо о группе", "motor")
 
   Rel_D(generator, mongo, "Три коллекции", "pymongo")
   Rel_D(generator, redis, "Карточки студентов", "redis-py")
@@ -61,8 +79,10 @@
   Lay_D(gateway, lab1)
   Lay_D(lab1, pg)
 
-  ' Генератор — сбоку от lab1, на том же ярусе: он не в пути запроса.
-  Lay_R(lab1, generator)
+  ' Три лабы и генератор — одним ярусом под gateway.
+  Lay_R(lab1, lab2)
+  Lay_R(lab2, lab3)
+  Lay_R(lab3, generator)
 
   ' Хранилища одним рядом слева направо, в порядке шагов лабы.
   ' MongoDB последней: её читает только генератор, поэтому её стрелка

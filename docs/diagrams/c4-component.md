@@ -13,7 +13,7 @@
   AddElementTag("config",       $bgColor="#455a64", $fontColor="#ffffff", $legendText="«config»")
   AddElementTag("ext_container",$bgColor="#546e7a", $fontColor="#ffffff", $legendText="внешний контейнер")
 
-  title C4 Level 3 — Component Diagram\nUniversityMicroservices — компоненты Gateway и Lab1
+  title C4 Level 3 — Component Diagram\nUniversityMicroservices — компоненты Gateway и Lab1\n(Lab2 и Lab3 построены по той же схеме: роутер -> оркестратор -> репозитории хранилищ)
 
   Person(user, "Пользователь", "Аналитик кафедры")
 

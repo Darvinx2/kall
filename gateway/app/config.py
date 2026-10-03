@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # проверка авторизации целиком на gateway. Внутри сети compose обращение
     # идёт по имени сервиса на порт 8000, снаружи — на опубликованный 8001.
     lab1_url: str = "http://localhost:8001"
+    lab2_url: str = "http://localhost:8002"
+    lab3_url: str = "http://localhost:8003"
     http_timeout_seconds: float = 30.0
 
     model_config = SettingsConfigDict(
